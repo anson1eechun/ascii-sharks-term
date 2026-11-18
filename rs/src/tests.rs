@@ -1,12 +1,10 @@
-use std::fmt::Write;
-
 use super::*;
 use crate::app::STEP;
 use crate::cli::parse_kinds;
 use crate::grid::{DEFAULT_BG, Grid};
 
 /// Upstream demo.ts sizing: the first shark is biggest, the rest step down.
-fn demo_sizes(kinds: &[SharkKind]) -> Vec<SharkSpec> {
+pub fn demo_sizes(kinds: &[SharkKind]) -> Vec<SharkSpec> {
     kinds
         .iter()
         .enumerate()
@@ -195,92 +193,6 @@ fn ripple_draws_a_ring() {
 
 /// Renders a real frame to SVG for the README:
 /// `SHARKS_SVG=../docs/screenshot.svg cargo test --release screenshot`
-#[test]
-fn screenshot_svg() {
-    let Ok(path) = std::env::var("SHARKS_SVG") else {
-        return;
-    };
-    let (cols, rows, cw, ch) = (96, 28, 13.0, 27.0);
-    let env = |k: &str, d: u32| {
-        std::env::var(k)
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(d)
-    };
-    let (seed, steps) = (
-        env("SHARKS_SVG_SEED", 42),
-        env("SHARKS_SVG_STEPS", 600) as usize,
-    );
-    math::seed(seed);
-    let kinds = "greathammer,tiger,hammerhead,zebra";
-    let mut world = World::new(demo_sizes(&parse_kinds(kinds).unwrap()), None);
-    let mut renderer = Renderer::new();
-    let mut grid = Grid::new();
-    renderer.resize(cols, rows, cw, ch);
-    world.resize(cols as f64 * cw, rows as f64 * ch, cw, ch);
-    grid.resize(cols, rows);
-    for i in 0..steps {
-        if i + 40 == steps {
-            renderer.ripple(24.0 * cw, 9.0 * ch, world.time);
-        }
-        world.step(STEP);
-        if i % 2 == 1 {
-            renderer.render(&mut world, 1.0 / 30.0, &mut grid);
-        }
-    }
-
-    let (w, h) = (9.0, 19.0);
-    let hex = |c: u32| format!("#{c:06x}");
-    let mut svg = String::new();
-    let _ = write!(
-        svg,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="15" font-weight="600">"#,
-        cols as f64 * w,
-        rows as f64 * h
-    );
-    svg += r##"<rect width="100%" height="100%" fill="#000"/>"##;
-    for i in 0..cols * rows {
-        if grid.bg[i] != DEFAULT_BG {
-            let (x, y) = ((i % cols) as f64 * w, (i / cols) as f64 * h);
-            let _ = write!(
-                svg,
-                r#"<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{}"/>"#,
-                hex(grid.bg[i])
-            );
-        }
-    }
-    for r in 0..rows {
-        let mut c = 0;
-        while c < cols {
-            let i = r * cols + c;
-            if grid.glyph[i] == ' ' {
-                c += 1;
-                continue;
-            }
-            let fg = grid.fg[i];
-            let (mut xs, mut text) = (String::new(), String::new());
-            while c < cols && grid.glyph[r * cols + c] != ' ' && grid.fg[r * cols + c] == fg {
-                let _ = write!(xs, "{} ", c as f64 * w + w / 2.0);
-                match grid.glyph[r * cols + c] {
-                    '&' => text += "&amp;",
-                    '<' => text += "&lt;",
-                    g => text.push(g),
-                }
-                c += 1;
-            }
-            let _ = write!(
-                svg,
-                r#"<text x="{}" y="{}" fill="{}" text-anchor="middle" xml:space="preserve">{text}</text>"#,
-                xs.trim_end(),
-                r as f64 * h + h * 0.72,
-                hex(fg)
-            );
-        }
-    }
-    svg += "</svg>\n";
-    std::fs::write(path, svg).unwrap();
-}
-
 #[test]
 fn random_kinds_are_distinct_until_they_run_out() {
     for n in 1..=8 {

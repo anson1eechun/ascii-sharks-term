@@ -3,6 +3,8 @@
 mod app;
 mod cli;
 mod clock;
+#[cfg(test)]
+mod demo;
 mod grid;
 mod input;
 mod math;

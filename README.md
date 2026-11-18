@@ -5,10 +5,10 @@
 ASCII sharks hunting schools of fish in your terminal, in 24-bit colour. A small (~400 KB), dependency-free Rust port of [stackedlol/ascii-sharks](https://github.com/stackedlol/ascii-sharks), with mouse interaction.
 
 <p align="center">
-  <img src="docs/screenshot.svg" alt="sharks in a terminal: a great hammerhead, a tiger shark, schools of fish and a ripple" width="100%">
+  <img src="docs/demo.svg" alt="sharks in a terminal: four sharks hunting schools of fish, a click ripple that scatters them, and sardines dropped as food" width="100%">
 </p>
 
-<sub>A real frame from the renderer, exported to SVG: a great hammerhead (right), a tiger shark (bottom) and a click ripple (left).</sub>
+<sub>Recorded from the renderer itself, frame by frame, as SVG: a click scatters the sharks, then a ball of sardines is dropped in front of the great hammerhead.</sub>
 
 ## Features
 
@@ -107,6 +107,10 @@ Each shark gets a random size, from 55% to 100% of the biggest. Upstream treats 
 The window can be resized at any time: the scene keeps its scale, and schools swim in to fill new space.
 
 ### Clock styles
+
+<p align="center">
+  <img src="docs/clock.svg" alt="sharks --clock --seconds: the time ticks over to 12:35:00 while sharks swim around it" width="100%">
+</p>
 
 `sharks --styles` shows them in your terminal. Each one grows to fit the window, and the sharks swim beneath the time.
 
@@ -220,6 +224,7 @@ cd ascii-sharks-term/rs
 cargo test --release           # unit tests, including an output budget
 cargo run --release            # try it
 ../verify/verify.sh            # compare against upstream (needs Bun)
+SHARKS_DEMO=../docs cargo test --release write_demos   # redraw the animations in docs/
 ```
 
 | Path | |
@@ -228,14 +233,17 @@ cargo run --release            # try it
 | `rs/src/app.rs` | The frame loop, keyboard and mouse, still and print modes (replaces upstream's `engine.ts`) |
 | `rs/src/clock.rs` | The clock styles and the message |
 | `rs/src/grid.rs` | The cell grid everything draws into, with wide-glyph support |
-| `rs/src/term.rs` | Terminal I/O on plain libc, and the writer: only changed cells, in 24-bit, 256, 16 or no colour |
+| `rs/src/term.rs` | Terminal I/O on plain libc: raw mode, size, signals, the startup probe |
+| `rs/src/screen.rs` | The writer: only changed cells, in 24-bit, 256, 16 or no colour |
 | `rs/src/input.rs` | Keys and SGR mouse reports from raw bytes |
 | `rs/src/cli.rs`, `main.rs` | Options and wiring |
+| `rs/src/demo.rs`, `docs/` | The README animations: seeded scenes recorded as SVG. CI checks they are up to date |
+| `rs/tests/` | The binary driven through a pseudo-terminal: keys, resizing, Ctrl-Z, still mode |
 | `upstream/` | Git submodule of the original, pinned to the verified commit |
 | `cell-canvas.ts` | A canvas stand-in that lets `verify/` run upstream's renderer in a terminal-sized grid |
 | `npm/` | npm package: the launcher and its manifest |
 
-**Releasing** is automatic. Bump the version in `rs/Cargo.toml`, commit, and push a matching tag:
+**Releasing** is automatic. Add the version's notes to [CHANGELOG.md](CHANGELOG.md), bump the version in `rs/Cargo.toml`, commit, and push a matching tag:
 
 ```sh
 git tag v0.4.0 && git push origin v0.4.0
@@ -244,7 +252,7 @@ git tag v0.4.0 && git push origin v0.4.0
 [The Release workflow](.github/workflows/release.yml) then:
 
 1. builds the macOS and Linux binaries,
-2. publishes the GitHub release,
+2. publishes the GitHub release, with that version's CHANGELOG section as its notes,
 3. publishes to npm through [trusted publishing](https://docs.npmjs.com/trusted-publishers) (no token; the package gets provenance), and
 4. pushes the Homebrew formula to [anson1eechun/homebrew-tap](https://github.com/anson1eechun/homebrew-tap) with a deploy key that can write to that repository only (secret `HOMEBREW_TAP_DEPLOY_KEY`).
 

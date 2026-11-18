@@ -5,10 +5,10 @@
 讓 ASCII 鯊魚在你的終端機裡獵捕魚群，24-bit 全彩。這是 [stackedlol/ascii-sharks](https://github.com/stackedlol/ascii-sharks) 的 Rust 移植版，執行檔約 400 KB，不依賴任何套件，可以用滑鼠互動。
 
 <p align="center">
-  <img src="docs/screenshot.svg" alt="終端機裡的 sharks：一隻無溝雙髻鯊、一隻虎鯊、魚群與漣漪" width="100%">
+  <img src="docs/demo.svg" alt="終端機裡的 sharks：四隻鯊魚追獵魚群，點擊產生的漣漪把牠們嚇開，接著投下沙丁魚當食物" width="100%">
 </p>
 
-<sub>這是程式實際渲染出的畫面，匯出成 SVG。右邊是無溝雙髻鯊，下方是虎鯊，左邊是點擊產生的漣漪。</sub>
+<sub>由程式的渲染器逐幀錄製成 SVG：先點擊水面把鯊魚嚇開，再在無溝雙髻鯊前方投下一群沙丁魚。</sub>
 
 ## 特色
 
@@ -107,6 +107,10 @@ sharks -S                              # 螢幕保護模式，按任意鍵離開
 視窗大小可以隨時調整：場景會維持原本的比例，新增的空間會有魚群游進來填補。
 
 ### 時鐘字型
+
+<p align="center">
+  <img src="docs/clock.svg" alt="sharks --clock --seconds：時間跳到 12:35:00，鯊魚在時鐘周圍游動" width="100%">
+</p>
 
 用 `sharks --styles` 可以在你的終端機裡預覽。每種字型都會依視窗大小放大，鯊魚會從時間底下游過。
 
@@ -222,6 +226,7 @@ cd ascii-sharks-term/rs
 cargo test --release           # 單元測試，包含輸出量上限
 cargo run --release            # 試跑
 ../verify/verify.sh            # 跟原作逐格比對（需要 Bun）
+SHARKS_DEMO=../docs cargo test --release write_demos   # 重新產生 docs/ 裡的動畫
 ```
 
 | 路徑 | |
@@ -230,14 +235,17 @@ cargo run --release            # 試跑
 | `rs/src/app.rs` | 主迴圈、鍵盤和滑鼠、靜止與列印模式，取代原作的 `engine.ts` |
 | `rs/src/clock.rs` | 時鐘字型與訊息 |
 | `rs/src/grid.rs` | 所有內容都畫進去的字元格，支援寬字元 |
-| `rs/src/term.rs` | 只用 libc 的終端機 I/O，以及輸出端：只送出變動的格子，支援全彩、256 色、16 色和無色 |
+| `rs/src/term.rs` | 只用 libc 的終端機 I/O：raw mode、視窗大小、訊號、啟動時的偵測 |
+| `rs/src/screen.rs` | 輸出端：只送出變動的格子，支援全彩、256 色、16 色和無色 |
 | `rs/src/input.rs` | 從原始位元組解析按鍵和 SGR 滑鼠回報 |
 | `rs/src/cli.rs`、`main.rs` | 參數處理與串接 |
+| `rs/src/demo.rs`、`docs/` | README 的動畫：用固定 seed 錄成 SVG，CI 會檢查是否跟程式碼同步 |
+| `rs/tests/` | 透過虛擬終端機實際操作執行檔：按鍵、縮放視窗、Ctrl-Z、靜止模式 |
 | `upstream/` | 原作的 git submodule，固定在驗證過的版本 |
 | `cell-canvas.ts` | 取代瀏覽器 canvas，讓 `verify/` 能在終端機尺寸的網格上執行原作的渲染器 |
 | `npm/` | npm 套件的啟動腳本和設定檔 |
 
-**發佈新版本是全自動的**。改 `rs/Cargo.toml` 的版本號並 commit，再推上對應的標籤：
+**發佈新版本是全自動的**。在 [CHANGELOG.md](CHANGELOG.md) 寫好這個版本的變更，改 `rs/Cargo.toml` 的版本號並 commit，再推上對應的標籤：
 
 ```sh
 git tag v0.4.0 && git push origin v0.4.0
@@ -246,7 +254,7 @@ git tag v0.4.0 && git push origin v0.4.0
 接著 [Release 流程](.github/workflows/release.yml) 會：
 
 1. 編譯 macOS 和 Linux 的執行檔
-2. 建立 GitHub Release
+2. 建立 GitHub Release，說明取自 CHANGELOG 中這個版本的段落
 3. 透過 [Trusted Publishing](https://docs.npmjs.com/trusted-publishers) 發佈到 npm。不需要 token，套件會附上來源證明（provenance）。
 4. 用只能寫入 [anson1eechun/homebrew-tap](https://github.com/anson1eechun/homebrew-tap) 的 deploy key 推送 Homebrew formula。金鑰存放在 Secret `HOMEBREW_TAP_DEPLOY_KEY`。
 

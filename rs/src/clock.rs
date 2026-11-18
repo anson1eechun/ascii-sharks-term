@@ -402,8 +402,7 @@ impl Overlay {
     }
 
     /// Lays the time out again only when it, or the grid's size, changed.
-    fn refresh(&mut self, style: ClockStyle, cols: usize, rows: usize) {
-        let (h, m, s) = local_time();
+    fn refresh(&mut self, style: ClockStyle, cols: usize, rows: usize, (h, m, s): (u32, u32, u32)) {
         let time = (h, m, if self.seconds { s } else { 0 });
         if matches!(&self.cache, Some(c) if c.time == time && c.cols == cols && c.rows == rows) {
             return;
@@ -422,8 +421,13 @@ impl Overlay {
     }
 
     pub fn draw(&mut self, grid: &mut Grid) {
+        self.draw_at(grid, local_time);
+    }
+
+    /// Draws with the time `now` gives, called only when there is a clock.
+    pub fn draw_at(&mut self, grid: &mut Grid, now: impl FnOnce() -> (u32, u32, u32)) {
         if let Some(style) = self.clock {
-            self.refresh(style, grid.cols, grid.rows);
+            self.refresh(style, grid.cols, grid.rows, now());
         } else if self.message.is_none() {
             return;
         }
