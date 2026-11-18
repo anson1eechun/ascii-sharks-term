@@ -1,19 +1,8 @@
-//! Port of upstream src/world.ts: tiny fish schools and the sharks that hunt them.
-//!
-//! Fish: Reynolds boids (separation / alignment / cohesion) in Couzin-style
-//! zones, with a blind spot behind each fish. Alarm spreads from fish to fish
-//! through the school, so a whole school bolts even when only its edge can see
-//! the shark. Fleeing fish break sideways around the shark's path.
-//!
-//! Sharks: Reynolds steering (wander + pursuit + separation) on a
-//! follow-the-leader spine. Hunger builds over time and drops when they eat.
-//! Eaten fish come back later as new schools swimming in from the edges.
-//!
-//! Kept statement-for-statement with the original (including f32 storage where
-//! upstream uses Float32Array) so upstream changes carry over directly.
+//! Port of upstream src/world.ts, statement for statement, with f32 wherever
+//! upstream uses Float32Array, so verify/ can compare the two exactly.
 
-use crate::math::{angle_diff, clamp, current, js_round, rand, rand_int, random, PI, TAU};
-use crate::species::{pick_species, SPECIES};
+use crate::math::{PI, TAU, angle_diff, clamp, current, js_round, rand, rand_int, random};
+use crate::species::{SPECIES, pick_species};
 
 pub const SHARK_NODES: usize = 20;
 
@@ -58,7 +47,6 @@ impl SharkKind {
         Self::ALL.into_iter().find(|k| k.name() == s)
     }
 
-    /// Common name, in English or Chinese, for the -l listing.
     pub fn label(self, zh: bool) -> &'static str {
         let (en, zh_name) = match self {
             SharkKind::Classic => ("classic (requiem shark)", "經典鯊（真鯊）"),
@@ -74,7 +62,6 @@ impl SharkKind {
     }
 }
 
-/// Which sharks to put in the water; size is relative to the biggest.
 #[derive(Clone, Copy)]
 pub struct SharkSpec {
     pub kind: SharkKind,
@@ -88,17 +75,11 @@ pub struct Fish {
     pub vx: f64,
     pub vy: f64,
     pub species: usize,
-    /// 0 calm → 1 panicking. Spreads to neighbours.
     pub alarm: f64,
     pub alive: bool,
     pub respawn_at: f64,
-    /// Tail-beat phase.
-    pub phase: f64,
-    /// Smoothed angular velocity (rad/s); hard turns flash silver.
     pub turn: f64,
-    /// 0.55 far → 1 near.
     pub depth: f64,
-    /// Rotation sense shared by a school when it mills into a bait ball (±1).
     pub mill_dir: f64,
 }
 
@@ -107,22 +88,17 @@ pub struct Shark {
     pub id: u32,
     pub kind: SharkKind,
     pub length: f64,
-    /// Spine positions, snout first: [x0, y0, x1, y1, ...].
     pub nodes: [f32; SHARK_NODES * 2],
     pub heading: f64,
     pub speed: f64,
-    /// Tail-beat phase; drives the body wave in the renderer.
     pub phase: f64,
-    /// Smoothed angular velocity (rad/s); the shark banks its fins into turns.
     pub turn: f64,
     pub hunger: f64,
     pub wander: f64,
     pub orbit_dir: f64,
     pub orbit_radius: f64,
-    /// Index into World::fish.
     pub target: Option<usize>,
     pub retarget_at: f64,
-    /// 0 far / dim → 1 near / bright.
     pub depth: f64,
 }
 
@@ -130,6 +106,8 @@ pub struct Shark {
 pub enum EventKind {
     Eat,
     Splash,
+    /// Not in upstream.
+    Disturb,
 }
 
 pub struct WorldEvent {
@@ -138,18 +116,15 @@ pub struct WorldEvent {
     pub y: f64,
 }
 
-/// Not in upstream: a mouse click the sharks shy away from.
+/// Not in upstream.
 struct Disturbance {
     x: f64,
     y: f64,
     at: f64,
 }
 
-/// How long a click keeps scaring the sharks, in seconds.
 const SCARE_SECONDS: f64 = 4.0;
-/// Pull of the fright on a shark's heading at full strength (the edge return is 3.5).
 const SCARE_K: f64 = 6.0;
-/// Above this fright a shark gives up the hunt and bolts.
 const SCARE_FLEE: f64 = 0.15;
 
 #[derive(Default)]
@@ -174,11 +149,9 @@ pub struct World {
     pub events: Vec<WorldEvent>,
     pub pointer: Pointer,
 
-    /// Fish neighbourhood radius; the spatial hash bucket size matches it.
     perception: f64,
-    /// Per-species personal space in px (x, y).
-    sep_x: Vec<f64>,
-    sep_y: Vec<f64>,
+    sep_x: [f64; SPECIES.len()],
+    sep_y: [f64; SPECIES.len()],
     foreign_sep: f64,
     bucket_cols: usize,
     bucket_rows: usize,
@@ -188,6 +161,7 @@ pub struct World {
     last_spawn: f64,
     shark_specs: Vec<SharkSpec>,
     disturbances: Vec<Disturbance>,
+    due: Vec<usize>,
 }
 
 impl World {
@@ -201,8 +175,8 @@ impl World {
             events: Vec::new(),
             pointer: Pointer::default(),
             perception: 60.0,
-            sep_x: Vec::new(),
-            sep_y: Vec::new(),
+            sep_x: [0.0; SPECIES.len()],
+            sep_y: [0.0; SPECIES.len()],
             foreign_sep: 40.0,
             bucket_cols: 0,
             bucket_rows: 0,
@@ -212,6 +186,7 @@ impl World {
             last_spawn: 0.0,
             shark_specs,
             disturbances: Vec::new(),
+            due: Vec::new(),
         }
     }
 
@@ -219,9 +194,8 @@ impl World {
         let first = self.width == 0.0;
         self.width = width;
         self.height = height;
-        // Spacing is set in grid cells so every fish lands in its own cell.
-        self.sep_x = SPECIES.iter().map(|sp| sp.spacing[0] * cell_w).collect();
-        self.sep_y = SPECIES.iter().map(|sp| sp.spacing[1] * cell_h).collect();
+        self.sep_x = SPECIES.map(|sp| sp.spacing[0] * cell_w);
+        self.sep_y = SPECIES.map(|sp| sp.spacing[1] * cell_h);
         self.perception = (cell_h * 3.0).max(cell_w * 5.5);
         self.foreign_sep = cell_w * 3.0;
 
@@ -275,7 +249,6 @@ impl World {
                 depth: size,
             });
         }
-        // Smaller (farther) sharks draw first so the big one swims over them.
         self.sharks.sort_by(|a, b| a.length.total_cmp(&b.length));
 
         let total = clamp(js_round((w * h) / 4400.0), 85.0, 340.0) as usize;
@@ -283,25 +256,30 @@ impl World {
         while self.fish.len() < total {
             let species = pick_species();
             let sp = &SPECIES[species];
-            let size = (rand_int(sp.school_size[0], sp.school_size[1]) as usize).min(total - self.fish.len());
+            let size = (rand_int(sp.school_size[0], sp.school_size[1]) as usize)
+                .min(total - self.fish.len());
             let mill_dir = if random() < 0.5 { 1.0 } else { -1.0 };
             let cx = rand(w * 0.06, w * 0.94);
             let cy = rand(h * 0.08, h * 0.92);
-            // Mostly level headings: fish cruise sideways far more than up or down.
             let dir = (if random() < 0.5 { 0.0 } else { PI }) + rand(-0.5, 0.5);
+            let spread = (size as f64).sqrt();
             for _ in 0..size {
+                let x = cx + rand(-1.0, 1.0) * self.sep_x[species] * spread;
+                let y = cy + rand(-1.0, 1.0) * self.sep_y[species] * spread * 0.6;
+                // Upstream draws a tail-beat phase it never reads; keep its random sequence.
+                rand(0.0, TAU);
+                let depth = rand(0.55, 1.0);
                 self.fish.push(Fish {
-                    x: cx + rand(-1.0, 1.0) * self.sep_x[species] * (size as f64).sqrt(),
-                    y: cy + rand(-1.0, 1.0) * self.sep_y[species] * (size as f64).sqrt() * 0.6,
+                    x,
+                    y,
                     vx: dir.cos() * sp.cruise,
                     vy: dir.sin() * sp.cruise,
                     species,
                     alarm: 0.0,
                     alive: true,
                     respawn_at: 0.0,
-                    phase: rand(0.0, TAU),
                     turn: 0.0,
-                    depth: rand(0.55, 1.0),
+                    depth,
                     mill_dir,
                 });
             }
@@ -310,7 +288,11 @@ impl World {
     }
 
     pub fn splash(&mut self, x: f64, y: f64) {
-        self.events.push(WorldEvent { kind: EventKind::Splash, x, y });
+        self.events.push(WorldEvent {
+            kind: EventKind::Splash,
+            x,
+            y,
+        });
         let r = 240.0;
         for f in &mut self.fish {
             if !f.alive {
@@ -322,7 +304,6 @@ impl World {
             if d > r || d < 1e-3 {
                 continue;
             }
-            // Flash expansion: everybody nearby bolts straight out.
             let k = (1.0 - d / r) * 260.0;
             f.vx += (dx / d) * k;
             f.vy += (dy / d) * k;
@@ -330,7 +311,7 @@ impl World {
         }
     }
 
-    /// Not in upstream: sharks steer away from (x, y) for the next SCARE_SECONDS.
+    /// Not in upstream.
     pub fn disturb(&mut self, x: f64, y: f64) {
         let time = self.time;
         self.disturbances.retain(|d| time - d.at < SCARE_SECONDS);
@@ -338,6 +319,11 @@ impl World {
             self.disturbances.remove(0);
         }
         self.disturbances.push(Disturbance { x, y, at: time });
+        self.events.push(WorldEvent {
+            kind: EventKind::Disturb,
+            x,
+            y,
+        });
     }
 
     pub fn step(&mut self, dt: f64) {
@@ -375,19 +361,22 @@ impl World {
         }
     }
 
-    fn bucket_of(&self, x: f64, y: f64) -> usize {
+    fn bucket_cell(&self, x: f64, y: f64) -> (usize, usize) {
         let size = self.perception;
         let c = clamp((x / size).floor() + 2.0, 0.0, (self.bucket_cols - 1) as f64) as usize;
         let r = clamp((y / size).floor() + 2.0, 0.0, (self.bucket_rows - 1) as f64) as usize;
+        (c, r)
+    }
+
+    fn bucket_of(&self, x: f64, y: f64) -> usize {
+        let (c, r) = self.bucket_cell(x, y);
         r * self.bucket_cols + c
     }
 
     fn step_fish(&mut self, dt: f64) {
         let (w, h, time) = (self.width, self.height, self.time);
-        let r_ = self.perception;
-        let r2 = r_ * r_;
+        let r2 = self.perception * self.perception;
         let foreign_sep = self.foreign_sep;
-        let size = self.perception;
         let cols = self.bucket_cols;
         let rows = self.bucket_rows;
         let head = &self.bucket_head;
@@ -401,8 +390,6 @@ impl World {
                 continue;
             }
             let sp = &SPECIES[f.species];
-            // Alarmed fish want more room: the school flashes apart around a
-            // shark and closes back up once the threat fades.
             let spread = 1.0 + 1.8 * f.alarm;
             let sep_x = self.sep_x[f.species] * spread;
             let sep_y = self.sep_y[f.species] * spread;
@@ -422,8 +409,7 @@ impl World {
             let mut n = 0u32;
             let mut neighbour_alarm: f64 = 0.0;
 
-            let bc = clamp((f.x / size).floor() + 2.0, 0.0, (cols - 1) as f64) as usize;
-            let br = clamp((f.y / size).floor() + 2.0, 0.0, (rows - 1) as f64) as usize;
+            let (bc, br) = self.bucket_cell(f.x, f.y);
             for r in br.saturating_sub(1)..=(br + 1).min(rows - 1) {
                 for c in bc.saturating_sub(1)..=(bc + 1).min(cols - 1) {
                     let mut j = head[r * cols + c];
@@ -436,9 +422,7 @@ impl World {
                             let d2 = dx * dx + dy * dy;
                             if d2 < r2 && d2 > 1e-6 {
                                 let d = d2.sqrt();
-                                // Blind zone directly behind the fish.
                                 if (dx * hx + dy * hy) / d > BLIND_COS {
-                                    // Elliptical personal space: wide along x, tight along y.
                                     let qx = dx / sep_x;
                                     let qy = dy / sep_y;
                                     let q2 = qx * qx + qy * qy;
@@ -456,7 +440,6 @@ impl World {
                                         cy += dy;
                                         n += 1;
                                     } else if d < foreign_sep {
-                                        // Different species keep their own schools.
                                         let k = ((1.0 - d / foreign_sep) / d) * 0.6;
                                         sx -= dx * k;
                                         sy -= dy * k;
@@ -481,15 +464,12 @@ impl World {
                 ax += (avx / n - f.vx) * align_k + (cx / n) * cohesion_k;
                 ay += (avy / n - f.vy) * align_k + (cy / n) * cohesion_k;
                 if sp.mill > 0.0 {
-                    // Circle the local centre: the school spins into a bait ball.
                     let cl = or_one(cx.hypot(cy));
                     ax += (-cy / cl) * f.mill_dir * sp.mill * (1.0 - f.alarm);
                     ay += (cx / cl) * f.mill_dir * sp.mill * (1.0 - f.alarm);
                 }
             }
 
-            // Predators. Distance is measured to the nearest point along the front
-            // half of the shark, so fish also give the flanks a wide berth.
             let mut fear: f64 = 0.0;
             for sh in &self.sharks {
                 let fear_r = sh.length * 0.6 + 60.0;
@@ -514,10 +494,14 @@ impl World {
                 wt *= wt;
                 let away_x = (f.x - bx) / d;
                 let away_y = (f.y - by) / d;
-                // Fountain effect: break to whichever side of the shark's path you're on.
                 let shx = sh.heading.cos();
                 let shy = sh.heading.sin();
-                let side = if shx * (f.y - sh.nodes[1] as f64) - shy * (f.x - sh.nodes[0] as f64) >= 0.0 { 1.0 } else { -1.0 };
+                let side =
+                    if shx * (f.y - sh.nodes[1] as f64) - shy * (f.x - sh.nodes[0] as f64) >= 0.0 {
+                        1.0
+                    } else {
+                        -1.0
+                    };
                 ax += (away_x * 0.7 - shy * side * 0.9) * FISH_FLEE_K * wt;
                 ay += (away_y * 0.7 + shx * side * 0.9) * FISH_FLEE_K * wt;
                 fear = fear.max(wt.sqrt());
@@ -536,8 +520,6 @@ impl World {
                 }
             }
 
-            // Alarm: direct threat sets it, neighbours pass it along (slightly
-            // weaker each hop), and it fades on its own.
             let mut alarm = (f.alarm * calm_decay).max(fear);
             let relayed = neighbour_alarm * 0.86;
             if relayed > alarm {
@@ -545,7 +527,6 @@ impl World {
             }
             f.alarm = alarm;
 
-            // Soft walls.
             let m = 36.0;
             if f.x < m {
                 ax += (m - f.x) * 7.0;
@@ -558,14 +539,11 @@ impl World {
                 ay -= (f.y - (h - m)) * 7.0;
             }
 
-            // Ambient current and a little individual restlessness.
             let (cur_x, cur_y) = current(f.x, f.y, time);
             ax += cur_x * 0.5 + (random() - 0.5) * sp.jitter;
             ay += cur_y * 0.5 + (random() - 0.5) * sp.jitter;
-            // Swim level, except when bolting from danger.
             ay -= f.vy * sp.vertical_drag * (1.0 - 0.7 * f.alarm);
 
-            // Relax toward a preferred speed that rises with panic.
             let preferred = sp.cruise * (1.0 + 1.3 * f.alarm);
             ax += (preferred - speed) * hx * 1.6;
             ay += (preferred - speed) * hy * 1.6;
@@ -583,7 +561,6 @@ impl World {
                 f.vy *= sp.min_speed / s;
             }
             f.turn += (angle_diff(before, f.vy.atan2(f.vx)) / dt - f.turn) * (dt * 8.0).min(1.0);
-            f.phase += dt * (7.0 + f.vx.hypot(f.vy) * 0.12);
             f.x = clamp(f.x + f.vx * dt, -60.0, w + 60.0);
             f.y = clamp(f.y + f.vy * dt, -60.0, h + 60.0);
             self.fish[i] = f;
@@ -604,43 +581,16 @@ impl World {
 
             sh.hunger = (sh.hunger + dt * 0.03).min(1.0);
 
-            // Momentum.
             let mut dx = sh.heading.cos();
             let mut dy = sh.heading.sin();
 
-            // Wander: a slowly drifting offset on a circle ahead of the snout.
             sh.wander = clamp(sh.wander + (random() - 0.5) * dt * 3.2, -1.1, 1.1);
             dx += (sh.heading + sh.wander).cos() * 0.45;
             dy += (sh.heading + sh.wander).sin() * 0.45;
 
-            // Not in upstream: shy away from recent mouse clicks. The fright fades with
-            // time and with distance from the nearest part of the body; strong enough,
-            // it overrides the hunt.
-            let mut scare: f64 = 0.0;
-            for d in &self.disturbances {
-                let age = time - d.at;
-                if !(0.0..SCARE_SECONDS).contains(&age) {
-                    continue;
-                }
-                let mut near = f64::INFINITY;
-                for k in (0..SHARK_NODES).step_by(4) {
-                    near = near.min((sh.nodes[k * 2] as f64 - d.x).hypot(sh.nodes[k * 2 + 1] as f64 - d.y));
-                }
-                let range = l * 0.9 + 220.0;
-                if near >= range {
-                    continue;
-                }
-                let wt = (1.0 - near / range) * (1.0 - age / SCARE_SECONDS);
-                // Turn the snout away from the click.
-                let (ox, oy) = (hx - d.x, hy - d.y);
-                let od = ox.hypot(oy).max(1e-3);
-                dx += (ox / od) * wt * SCARE_K;
-                dy += (oy / od) * wt * SCARE_K;
-                scare = scare.max(wt);
-            }
+            let scare = self.flee_clicks(&sh, &mut dx, &mut dy);
             let fleeing = scare > SCARE_FLEE;
 
-            // Hunt.
             if time >= sh.retarget_at {
                 sh.target = self.find_prey(&sh);
                 sh.retarget_at = time + 0.45;
@@ -649,7 +599,6 @@ impl World {
             let mut closing = 0.0;
             match sh.target.map(|t| self.fish[t]) {
                 Some(t) if t.alive && sh.hunger > 0.3 && !fleeing => {
-                    // Pursuit: aim at where the fish is about to be.
                     let tx = t.x + t.vx * 0.35 - hx;
                     let ty = t.y + t.vy * 0.35 - hy;
                     let d = or_one(tx.hypot(ty));
@@ -660,18 +609,17 @@ impl World {
                     closing = clamp(1.0 - d / (l * 0.9), 0.0, 1.0);
                 }
                 _ => {
-                    // Patrol: a lazy circuit around the headline.
                     let rx = (hx - cx_w) / (w / min_side);
                     let ry = hy - cy_w;
                     let r = or_one(rx.hypot(ry));
-                    let radius = sh.orbit_radius * (1.0 + 0.15 * (time * 0.05 + sh.id as f64).sin());
+                    let radius =
+                        sh.orbit_radius * (1.0 + 0.15 * (time * 0.05 + sh.id as f64).sin());
                     let radial = clamp((radius - r) / radius, -1.0, 1.0);
                     dx += ((-ry / r) * sh.orbit_dir + (rx / r) * radial * 0.9) * 0.55;
                     dy += ((rx / r) * sh.orbit_dir + (ry / r) * radial * 0.9) * 0.55;
                 }
             }
 
-            // Give other sharks room.
             for (oi, other) in self.sharks.iter().enumerate() {
                 if oi == si {
                     continue;
@@ -689,7 +637,6 @@ impl World {
                 }
             }
 
-            // Keep the headline mostly clear: a soft elliptical no-swim zone.
             let ex = (hx - cx_w) / (w * 0.3);
             let ey = (hy - cy_w) / (h * 0.16);
             let e2 = ex * ex + ey * ey;
@@ -701,8 +648,6 @@ impl World {
                 dy += (ey / e) * wt;
             }
 
-            // Turn back once the snout leaves the frame, so bodies dip off-screen
-            // now and then but the sharks never wander away for good.
             let over = (-hx).max(hx - w).max(-hy).max(hy - h);
             if over > -l * 0.05 {
                 let wt = clamp((over + l * 0.05) / (l * 0.35), 0.0, 1.0) * 3.5;
@@ -714,9 +659,7 @@ impl World {
             }
 
             let desired = dy.atan2(dx);
-            // Sharks can't pivot on the spot: the turning circle grows with speed.
             let agility = if fleeing {
-                // A startle turn, sharper than the cruising turning circle allows.
                 (1.2 + 1.8 * scare).min(sh.speed / (l * 0.1))
             } else {
                 (if hunting { 1.7 + closing } else { 0.8 }).min(sh.speed / (l * 0.22))
@@ -730,7 +673,6 @@ impl World {
             let target_speed = if hunting {
                 cruise * (1.45 + closing * 1.5)
             } else if fleeing {
-                // A startled burst, like a hunting dash.
                 cruise * (1.0 + 1.4 * scare)
             } else {
                 cruise
@@ -743,8 +685,6 @@ impl World {
             nodes[0] = (nodes[0] as f64 + sh.heading.cos() * sh.speed * dt) as f32;
             nodes[1] = (nodes[1] as f64 + sh.heading.sin() * sh.speed * dt) as f32;
 
-            // Follow-the-leader spine, with a stiffness limit per joint so the
-            // body bends into a C at most and never folds back on itself.
             let seg = l / (SHARK_NODES - 1) as f64;
             let max_bend = 0.16;
             let mut prev_angle = sh.heading + PI;
@@ -758,7 +698,6 @@ impl World {
                 prev_angle = angle;
             }
 
-            // Feed.
             if sh.hunger > 0.15 {
                 let mouth_r = l * 0.05 + 8.0;
                 let mx = sh.nodes[0] as f64;
@@ -771,7 +710,11 @@ impl World {
                         f.alive = false;
                         f.respawn_at = time + rand(3.0, 8.0);
                         sh.hunger = (sh.hunger - 0.16).max(0.0);
-                        self.events.push(WorldEvent { kind: EventKind::Eat, x: f.x, y: f.y });
+                        self.events.push(WorldEvent {
+                            kind: EventKind::Eat,
+                            x: f.x,
+                            y: f.y,
+                        });
                     }
                 }
             }
@@ -779,8 +722,33 @@ impl World {
         }
     }
 
-    /// Pick prey in the shark's forward cone, preferring close fish in sparse
-    /// buckets (stragglers) over fish buried in a dense school.
+    /// Not in upstream. Returns the fright, fading with time and distance.
+    fn flee_clicks(&self, sh: &Shark, dx: &mut f64, dy: &mut f64) -> f64 {
+        let (hx, hy) = (sh.nodes[0] as f64, sh.nodes[1] as f64);
+        let range = sh.length * 0.9 + 220.0;
+        let mut scare: f64 = 0.0;
+        for d in &self.disturbances {
+            let age = self.time - d.at;
+            if !(0.0..SCARE_SECONDS).contains(&age) {
+                continue;
+            }
+            let near = (0..SHARK_NODES)
+                .step_by(4)
+                .map(|k| (sh.nodes[k * 2] as f64 - d.x).hypot(sh.nodes[k * 2 + 1] as f64 - d.y))
+                .fold(f64::INFINITY, f64::min);
+            if near >= range {
+                continue;
+            }
+            let wt = (1.0 - near / range) * (1.0 - age / SCARE_SECONDS);
+            let (ox, oy) = (hx - d.x, hy - d.y);
+            let od = ox.hypot(oy).max(1e-3);
+            *dx += (ox / od) * wt * SCARE_K;
+            *dy += (oy / od) * wt * SCARE_K;
+            scare = scare.max(wt);
+        }
+        scare
+    }
+
     fn find_prey(&self, sh: &Shark) -> Option<usize> {
         let range = sh.length * 0.9 + 160.0;
         let hx = sh.nodes[0] as f64;
@@ -815,7 +783,6 @@ impl World {
                 current_score = score;
             }
         }
-        // Stick with the current target unless something is clearly better.
         if sh.target.is_some() && current_score < best_score * 1.3 {
             return sh.target;
         }
@@ -824,18 +791,18 @@ impl World {
 
     fn respawn(&mut self) {
         let (time, w, h) = (self.time, self.width, self.height);
-        let due: Vec<usize> = (0..self.fish.len())
-            .filter(|&i| !self.fish[i].alive && self.fish[i].respawn_at <= time)
-            .collect();
-        if due.is_empty() {
+        let fish = &self.fish;
+        self.due.clear();
+        self.due
+            .extend((0..fish.len()).filter(|&i| !fish[i].alive && fish[i].respawn_at <= time));
+        if self.due.is_empty() {
             return;
         }
-        if due.len() < 6 && time - self.last_spawn < 9.0 {
+        if self.due.len() < 6 && time - self.last_spawn < 9.0 {
             return;
         }
         self.last_spawn = time;
 
-        // A new school swims in from a random edge.
         let side = rand_int(0, 3);
         let along = rand(0.15, 0.85);
         let x = match side {
@@ -852,7 +819,7 @@ impl World {
         let species = pick_species();
         let sp = &SPECIES[species];
         let mill_dir = if random() < 0.5 { 1.0 } else { -1.0 };
-        for &i in due.iter().take(sp.school_size[1] as usize) {
+        for &i in self.due.iter().take(sp.school_size[1] as usize) {
             let f = &mut self.fish[i];
             f.alive = true;
             f.species = species;

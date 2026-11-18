@@ -1,28 +1,32 @@
-//! sharks — stackedlol/ascii-sharks in the terminal.
-//!
-//! world.rs and renderer.rs port upstream's world.ts and renderer.ts; this file
-//! replaces engine.ts (frame loop, resize, pointer input) and term.rs replaces
-//! the canvas.
+//! stackedlol/ascii-sharks in the terminal; this file stands in for upstream's engine.ts.
 
+mod input;
 mod math;
 mod renderer;
 mod species;
 mod term;
+#[cfg(test)]
+mod tests;
 mod world;
 
 use std::io;
 use std::process::exit;
+use std::sync::OnceLock;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
+use input::{Input, MOUSE_BUTTONS, MOUSE_MOTION, MOUSE_WHEEL};
 use math::{clamp, js_round};
 use renderer::{Grid, Renderer};
 use world::{SharkKind, SharkSpec, World};
 
 const STEP: f64 = 1.0 / 60.0;
 const MAX_STEPS: u32 = 4;
-/// Height / width of a terminal cell when the terminal won't tell us.
 const FALLBACK_ASPECT: f64 = 2.1;
+const MIN_SIZE: f64 = 0.55;
+/// How long a lone Esc waits to rule out being the start of a sequence.
+const ESC_WAIT: Duration = Duration::from_millis(25);
+const CTRL_C: u8 = 0x03;
 
 const HELP_EN: &str = "sharks — ASCII sharks and fish schools in your terminal
 
@@ -64,9 +68,8 @@ const HELP_ZH: &str = "sharks — 終端機裡的 ASCII 鯊魚與魚群
 
 訊息語言依語系而定；設定 SHARKS_LANG=en 可改用英文。";
 
-/// Chinese messages when SHARKS_LANG or the POSIX locale asks for them.
 fn zh() -> bool {
-    static ZH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static ZH: OnceLock<bool> = OnceLock::new();
     *ZH.get_or_init(|| {
         ["SHARKS_LANG", "LC_ALL", "LC_MESSAGES", "LANG"]
             .iter()
@@ -75,21 +78,8 @@ fn zh() -> bool {
     })
 }
 
-/// Picks the English or Chinese text.
 fn t(en: &'static str, zh_text: &'static str) -> &'static str {
     if zh() { zh_text } else { en }
-}
-
-/// The smallest shark, relative to the biggest one in the water.
-const MIN_SIZE: f64 = 0.55;
-
-struct Options {
-    /// From -k; otherwise `count` kinds are picked at random.
-    kinds: Option<Vec<SharkKind>>,
-    count: usize,
-    fps: f64,
-    screensaver: bool,
-    aspect: Option<f64>,
 }
 
 fn fail(msg: &str) -> ! {
@@ -97,17 +87,31 @@ fn fail(msg: &str) -> ! {
     exit(2);
 }
 
+struct Options {
+    kinds: Option<Vec<SharkKind>>,
+    count: usize,
+    fps: f64,
+    screensaver: bool,
+    aspect: Option<f64>,
+}
+
 fn parse_args() -> Options {
-    let mut opts = Options { kinds: None, count: 4, fps: 30.0, screensaver: false, aspect: None };
+    let mut opts = Options {
+        kinds: None,
+        count: 4,
+        fps: 30.0,
+        screensaver: false,
+        aspect: None,
+    };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        let (flag, inline) = match arg.split_once('=') {
-            Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
-            _ => (arg.clone(), None),
+        let (flag, mut inline) = match arg.split_once('=') {
+            Some((f, v)) if f.starts_with("--") => (f.to_owned(), Some(v.to_owned())),
+            _ => (arg, None),
         };
         let mut value = || {
             inline
-                .clone()
+                .take()
                 .or_else(|| args.next())
                 .unwrap_or_else(|| fail(&format!("{flag} {}", t("needs a value", "需要一個值"))))
         };
@@ -131,34 +135,47 @@ fn parse_args() -> Options {
             "-n" | "--count" => {
                 opts.count = match value().parse() {
                     Ok(n @ 1..=12) => n,
-                    _ => fail(t("--count must be between 1 and 12", "--count 要介於 1 到 12")),
+                    _ => fail(t(
+                        "--count must be between 1 and 12",
+                        "--count 要介於 1 到 12",
+                    )),
                 };
             }
             "-f" | "--fps" => {
-                let fps: f64 = value().parse().unwrap_or(f64::NAN);
-                if !(1.0..=120.0).contains(&fps) {
-                    fail(t("--fps must be between 1 and 120", "--fps 要介於 1 到 120"));
+                opts.fps = value().parse().unwrap_or(f64::NAN);
+                if !(1.0..=120.0).contains(&opts.fps) {
+                    fail(t(
+                        "--fps must be between 1 and 120",
+                        "--fps 要介於 1 到 120",
+                    ));
                 }
-                opts.fps = fps;
             }
             "--aspect" => {
-                let aspect: f64 = value().parse().unwrap_or(f64::NAN);
-                if !(1.0..=4.0).contains(&aspect) {
-                    fail(t("--aspect must be between 1 and 4", "--aspect 要介於 1 到 4"));
+                let aspect = value().parse().unwrap_or(f64::NAN);
+                if !term::ASPECT.contains(&aspect) {
+                    fail(t(
+                        "--aspect must be between 1 and 4",
+                        "--aspect 要介於 1 到 4",
+                    ));
                 }
                 opts.aspect = Some(aspect);
             }
-            _ if zh() => fail(&format!("不認得的選項：{arg}（用 -h 看說明）")),
-            _ => fail(&format!("unknown option: {arg} (see -h)")),
+            _ if zh() => fail(&format!("不認得的選項：{flag}（用 -h 看說明）")),
+            _ => fail(&format!("unknown option: {flag} (see -h)")),
         }
     }
     opts
 }
 
 fn parse_kinds(list: &str) -> Vec<SharkKind> {
-    let names: Vec<&str> = list.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
-    let unknown: Vec<&str> = names.iter().copied().filter(|n| SharkKind::parse(n).is_none()).collect();
+    let (kinds, unknown): (Vec<_>, Vec<_>) = list
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|n| SharkKind::parse(n).ok_or(n))
+        .partition(Result::is_ok);
     if !unknown.is_empty() {
+        let unknown: Vec<&str> = unknown.into_iter().filter_map(Result::err).collect();
         let unknown = unknown.join(", ");
         fail(&if zh() {
             format!("不認得的鯊魚種類：{unknown}（用 -l 看清單）")
@@ -166,50 +183,48 @@ fn parse_kinds(list: &str) -> Vec<SharkKind> {
             format!("unknown shark kind: {unknown} (see -l)")
         });
     }
-    names.iter().map(|n| SharkKind::parse(n).unwrap()).collect()
+    kinds.into_iter().flatten().collect()
 }
 
-/// `n` kinds at random: all different while there are enough kinds to go round.
 fn random_kinds(n: usize) -> Vec<SharkKind> {
     let mut kinds = SharkKind::ALL.to_vec();
-    // Fisher–Yates.
     for i in (1..kinds.len()).rev() {
         kinds.swap(i, (math::random() * (i + 1) as f64) as usize);
     }
     (0..n)
-        .map(|i| kinds.get(i).copied().unwrap_or_else(|| kinds[(math::random() * kinds.len() as f64) as usize]))
+        .map(|i| {
+            kinds
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| kinds[(math::random() * kinds.len() as f64) as usize])
+        })
         .collect()
 }
 
-/// One shark at full size, the rest anywhere from MIN_SIZE up. Upstream reads size
-/// as depth too, so the smaller ones also swim deeper and dimmer.
+/// Upstream also reads size as depth.
 fn random_sizes(kinds: &[SharkKind]) -> Vec<SharkSpec> {
     let biggest = (math::random() * kinds.len() as f64) as usize;
     kinds
         .iter()
         .enumerate()
-        .map(|(i, &kind)| SharkSpec { kind, size: if i == biggest { 1.0 } else { math::rand(MIN_SIZE, 1.0) } })
+        .map(|(i, &kind)| SharkSpec {
+            kind,
+            size: if i == biggest {
+                1.0
+            } else {
+                math::rand(MIN_SIZE, 1.0)
+            },
+        })
         .collect()
 }
 
-/// Upstream demo.ts sizing (the first is biggest, the rest step down), for
-/// scenes that must match upstream.
-#[cfg(test)]
-fn demo_sizes(kinds: &[SharkKind]) -> Vec<SharkSpec> {
-    kinds.iter().enumerate().map(|(i, &kind)| SharkSpec { kind, size: (1.0 - i as f64 * 0.1).max(0.3) }).collect()
-}
-
-/// Upstream sizes cells from the canvas width (width / 124, clamped to 8–13 px).
-/// Take the width it would settle on for this many columns, so the world has the
-/// same scale as the web version at a comparable size.
+/// The cell width upstream's renderer would pick (canvas width / 124, clamped to 8–13 px).
 fn cell_width(cols: usize) -> f64 {
-    for w in (8..=13).rev() {
-        let w = w as f64;
-        if clamp(js_round(cols as f64 * w / 124.0), 8.0, 13.0) == w {
-            return w;
-        }
-    }
-    8.0
+    (8..=13)
+        .rev()
+        .map(f64::from)
+        .find(|&w| clamp(js_round(cols as f64 * w / 124.0), 8.0, 13.0) == w)
+        .unwrap_or(8.0)
 }
 
 struct App {
@@ -222,145 +237,163 @@ struct App {
     ch: f64,
     paused: bool,
     screensaver: bool,
+    frame: Duration,
+    last: Instant,
+    next: Instant,
+    acc: f64,
+    pending: Vec<u8>,
 }
 
 impl App {
+    fn new(opts: &Options, aspect: f64) -> Self {
+        let kinds = opts
+            .kinds
+            .clone()
+            .unwrap_or_else(|| random_kinds(opts.count));
+        let now = Instant::now();
+        App {
+            world: World::new(random_sizes(&kinds)),
+            renderer: Renderer::new(),
+            grid: Grid::new(),
+            screen: term::Screen::new(),
+            aspect,
+            cw: 0.0,
+            ch: 0.0,
+            paused: false,
+            screensaver: opts.screensaver,
+            frame: Duration::from_secs_f64(1.0 / opts.fps),
+            last: now,
+            next: now,
+            acc: 0.0,
+            pending: Vec::new(),
+        }
+    }
+
     fn layout(&mut self) -> io::Result<()> {
         let (cols, rows) = term::size();
         self.cw = cell_width(cols);
         self.ch = (self.cw + 1.0).max(js_round(self.cw * self.aspect));
         self.renderer.resize(cols, rows, self.cw, self.ch);
-        self.world.resize(cols as f64 * self.cw, rows as f64 * self.ch, self.cw, self.ch);
+        self.world.resize(
+            cols as f64 * self.cw,
+            rows as f64 * self.ch,
+            self.cw,
+            self.ch,
+        );
         self.grid.resize(cols, rows);
         self.screen.reset(cols * rows);
-        term::write_all(b"\x1b[0m\x1b[2J")
+        if self.paused {
+            self.draw(0.0)?;
+        }
+        Ok(())
     }
 
-    /// Returns true when the input asks to quit.
-    fn handle_input(&mut self, bytes: &[u8]) -> bool {
-        if self.screensaver {
-            // Any key, but not the terminal's own replies (CSI …).
-            return bytes == b"\x1b" || !bytes.starts_with(b"\x1b[");
+    fn draw(&mut self, dt: f64) -> io::Result<()> {
+        self.renderer.render(&mut self.world, dt, &mut self.grid);
+        self.screen.flush(&self.grid)
+    }
+
+    fn tick(&mut self, now: Instant) -> io::Result<()> {
+        let dt = (now - self.last).as_secs_f64().min(0.1);
+        self.last = now;
+        self.acc += dt;
+        let mut steps = 0;
+        while self.acc >= STEP && steps < MAX_STEPS {
+            self.world.step(STEP);
+            self.acc -= STEP;
+            steps += 1;
         }
-        if bytes == b"\x1b" {
-            return true;
+        if steps == MAX_STEPS {
+            self.acc = 0.0;
         }
-        let mut i = 0;
-        while i < bytes.len() {
-            match bytes[i] {
-                0x1b => i = self.escape(bytes, i),
-                b'q' | b'Q' | 0x03 => return true,
-                b'p' | b'P' => {
-                    self.paused = !self.paused;
-                    i += 1;
-                }
-                _ => i += 1,
+        self.draw(dt)
+    }
+
+    fn toggle_pause(&mut self) {
+        self.paused = !self.paused;
+        if !self.paused {
+            self.last = Instant::now();
+            self.next = self.last;
+        }
+    }
+
+    fn read_input(&mut self) -> io::Result<bool> {
+        let mut buf = [0u8; 4096];
+        let mut inputs = Vec::new();
+        loop {
+            match term::read_input(&mut buf) {
+                Ok(0) => return Ok(true),
+                Ok(n) => self.pending.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => return Ok(false),
+                Err(e) => return Err(e),
             }
+            let used = input::parse(&self.pending, &mut inputs);
+            self.pending.drain(..used);
+            if self.pending == [0x1b] && !term::wait_input(Some(ESC_WAIT)) {
+                self.pending.clear();
+                inputs.push(Input::Esc);
+            }
+            if self.pending.len() > 64 {
+                self.pending.clear();
+            }
+            if self.pending.is_empty() || !term::wait_input(Some(Duration::ZERO)) {
+                break;
+            }
+        }
+        Ok(inputs.iter().any(|i| self.apply(i)))
+    }
+
+    fn apply(&mut self, input: &Input) -> bool {
+        if self.screensaver {
+            return matches!(input, Input::Key(_) | Input::Esc);
+        }
+        match *input {
+            Input::Key(b'q' | b'Q' | CTRL_C) | Input::Esc => return true,
+            Input::Key(b'p' | b'P') => self.toggle_pause(),
+            Input::Mouse {
+                button,
+                col,
+                row,
+                press,
+            } => self.mouse(button, col, row, press),
+            Input::FocusLost => self.world.pointer.active = false,
+            _ => {}
         }
         false
     }
 
-    /// Consumes one escape sequence starting at `start`; returns the index after it.
-    fn escape(&mut self, bytes: &[u8], start: usize) -> usize {
-        if bytes.get(start + 1) != Some(&b'[') {
-            return start + 1;
-        }
-        let body_start = start + 2;
-        let Some(len) = bytes[body_start..].iter().position(|b| (0x40..=0x7e).contains(b)) else {
-            return bytes.len();
-        };
-        let end = body_start + len;
-        let (body, fin) = (&bytes[body_start..end], bytes[end]);
-        if fin == b'O' && body.is_empty() {
-            // Focus lost.
-            self.world.pointer.active = false;
-        } else if let [b'<', params @ ..] = body
-            && (fin == b'M' || fin == b'm')
-        {
-            self.mouse(params, fin == b'M');
-        }
-        end + 1
-    }
-
-    /// SGR mouse report `button;col;row`: moving scares fish, a left press splashes.
-    fn mouse(&mut self, params: &[u8], press: bool) {
-        let Ok(params) = std::str::from_utf8(params) else { return };
-        let mut it = params.split(';').map(|p| p.parse::<u32>());
-        let (Some(Ok(btn)), Some(Ok(col)), Some(Ok(row))) = (it.next(), it.next(), it.next()) else { return };
-        let x = (col as f64 - 0.5) * self.cw;
-        let y = (row as f64 - 0.5) * self.ch;
+    fn mouse(&mut self, button: u32, col: u32, row: u32, press: bool) {
+        let (x, y) = ((col as f64 - 0.5) * self.cw, (row as f64 - 0.5) * self.ch);
         let p = &mut self.world.pointer;
-        p.x = x;
-        p.y = y;
-        p.active = true;
-        // Bit 32 marks motion, 64 the wheel; low bits 0 is the left button.
-        if press && btn & (32 | 64) == 0 && btn & 3 == 0 && !self.paused {
-            // Upstream's splash scatters the fish; the ripple and the scared sharks are ours.
+        (p.x, p.y, p.active) = (x, y, true);
+        let left_press = press && button & (MOUSE_MOTION | MOUSE_WHEEL | MOUSE_BUTTONS) == 0;
+        if left_press && !self.paused {
             self.world.splash(x, y);
             self.world.disturb(x, y);
-            self.renderer.ripple(x, y, self.world.time);
         }
     }
-}
 
-/// Same fixed-timestep scheme as upstream's engine.ts, paced by poll() on stdin.
-fn run(opts: &Options, aspect: f64) -> io::Result<()> {
-    let mut app = App {
-        world: World::new(random_sizes(&opts.kinds.clone().unwrap_or_else(|| random_kinds(opts.count)))),
-        renderer: Renderer::new(),
-        grid: Grid::new(),
-        screen: term::Screen::new(),
-        aspect,
-        cw: 13.0,
-        ch: 27.0,
-        paused: false,
-        screensaver: opts.screensaver,
-    };
-    app.layout()?;
-
-    let frame = Duration::from_secs_f64(1.0 / opts.fps);
-    let mut last = Instant::now();
-    let mut next = last;
-    let mut acc = 0.0;
-    let mut input = [0u8; 4096];
-
-    loop {
-        if term::TERMINATE.load(Relaxed) {
-            return Ok(());
-        }
-        if term::RESIZED.swap(false, Relaxed) {
-            app.layout()?;
-        }
-
-        let now = Instant::now();
-        if now >= next {
-            let dt = (now - last).as_secs_f64().min(0.1);
-            last = now;
-            if !app.paused {
-                acc += dt;
-                let mut steps = 0;
-                while acc >= STEP && steps < MAX_STEPS {
-                    app.world.step(STEP);
-                    acc -= STEP;
-                    steps += 1;
-                }
-                if steps == MAX_STEPS {
-                    acc = 0.0;
-                }
-                app.renderer.render(&mut app.world, dt, &mut app.grid);
-                app.screen.flush(&app.grid)?;
+    fn run(&mut self) -> io::Result<()> {
+        self.layout()?;
+        loop {
+            if term::TERMINATE.load(Relaxed) {
+                return Ok(());
             }
-            next += frame;
-            if next < now {
-                next = now + frame;
+            if term::RESIZED.swap(false, Relaxed) {
+                self.layout()?;
             }
-        }
-
-        if term::wait_input(next.saturating_duration_since(Instant::now())) {
-            match term::read_input(&mut input) {
-                0 => return Ok(()), // terminal went away
-                n if n > 0 && app.handle_input(&input[..n as usize]) => return Ok(()),
-                _ => {}
+            let now = Instant::now();
+            if !self.paused && now >= self.next {
+                self.tick(now)?;
+                self.next += self.frame;
+                if self.next < now {
+                    self.next = now + self.frame;
+                }
+            }
+            let timeout =
+                (!self.paused).then(|| self.next.saturating_duration_since(Instant::now()));
+            if term::wait_input(timeout) && self.read_input()? {
+                return Ok(());
             }
         }
     }
@@ -378,268 +411,23 @@ fn main() {
         default_hook(info);
     }));
     if let Err(e) = term::enter() {
-        fail(&format!("{}: {e}", t("can't set up the terminal", "無法設定終端機")));
+        fail(&format!(
+            "{}: {e}",
+            t("can't set up the terminal", "無法設定終端機")
+        ));
     }
 
-    let aspect = opts.aspect.or_else(term::cell_aspect).unwrap_or(FALLBACK_ASPECT);
+    let aspect = opts
+        .aspect
+        .or_else(term::cell_aspect)
+        .unwrap_or(FALLBACK_ASPECT);
     if !opts.screensaver {
         let _ = term::write_all(term::MOUSE_ON);
     }
-    let result = run(&opts, aspect);
+    let result = App::new(&opts, aspect).run();
     term::leave();
     if let Err(e) = result {
         eprintln!("sharks: {e}");
         exit(1);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use renderer::DEFAULT_BG;
-
-    /// Renders a seeded scene and writes it as text, for diffing against the
-    /// TypeScript original driven by the same seed:
-    /// `SHARKS_DUMP=out.txt [SHARKS_DUMP_STEPS=240] cargo test dump_frame`
-    #[test]
-    fn dump_frame() {
-        let Ok(path) = std::env::var("SHARKS_DUMP") else { return };
-        let steps: usize = std::env::var("SHARKS_DUMP_STEPS").ok().and_then(|s| s.parse().ok()).unwrap_or(240);
-        let (cols, rows, cw, ch) = (150, 42, 13.0, 27.0);
-        math::seed(42);
-        let kinds = ["hammerhead", "tiger", "zebra", "greathammer", "thresher"];
-        let mut world = World::new(demo_sizes(&parse_kinds(&kinds.join(","))));
-        let mut renderer = Renderer::new();
-        let mut grid = Grid::new();
-        renderer.resize(cols, rows, cw, ch);
-        world.resize(cols as f64 * cw, rows as f64 * ch, cw, ch);
-        grid.resize(cols, rows);
-        // Forces the eat / heat / respawn paths early, before the two runs drift apart
-        // (1-ulp libm differences, amplified by the chaotic sim, after ~2 s).
-        let force = std::env::var("SHARKS_DUMP_FORCE").is_ok_and(|v| !v.is_empty());
-        let mut trace = String::new();
-        for i in 0..steps {
-            if i == 100 {
-                world.splash(900.0, 500.0);
-            }
-            if force && i == 50 {
-                for (k, sh) in world.sharks.iter_mut().enumerate() {
-                    sh.hunger = 1.0;
-                    world.fish[k].x = sh.nodes[0] as f64;
-                    world.fish[k].y = sh.nodes[1] as f64;
-                }
-            }
-            if force && i == 60 {
-                for f in &mut world.fish[10..16] {
-                    f.alive = false;
-                    f.respawn_at = world.time;
-                }
-            }
-            world.step(STEP);
-            let sx: f64 = world.fish.iter().map(|f| f.x).sum();
-            let sy: f64 = world.fish.iter().map(|f| f.y).sum();
-            let s0 = &world.sharks[0];
-            trace += &format!("{i} {sx:.10} {sy:.10} {:.6} {:.6}\n", s0.nodes[0], s0.nodes[1]);
-            if i % 2 == 1 {
-                renderer.render(&mut world, 1.0 / 30.0, &mut grid);
-            }
-        }
-        let mut out = String::new();
-        let alive = world.fish.iter().filter(|f| f.alive).count();
-        let sum: f64 = world.fish.iter().map(|f| f.x + f.y).sum();
-        out += &format!("world alive={alive} sum={sum:.6}\n");
-        for sh in &world.sharks {
-            out += &format!("shark {} {:.4} {:.4}\n", sh.id, sh.nodes[0], sh.nodes[1]);
-        }
-        for i in 0..cols * rows {
-            let (g, f, b) = (grid.glyph[i], grid.fg[i], grid.bg[i]);
-            if g == ' ' && b == DEFAULT_BG {
-                continue;
-            }
-            let fg = if g == ' ' { "-".to_string() } else { format!("{f:06x}") };
-            let bg = if b == DEFAULT_BG { "def".to_string() } else { format!("{b:06x}") };
-            out += &format!("{i} {g} {fg} {bg}\n");
-        }
-        std::fs::write(format!("{path}.trace"), trace).unwrap();
-        std::fs::write(path, out).unwrap();
-    }
-}
-
-#[cfg(test)]
-mod click_tests {
-    use super::*;
-    use world::SharkKind;
-
-    fn scene() -> World {
-        math::seed(7);
-        let mut world = World::new(vec![SharkSpec { kind: SharkKind::Classic, size: 1.0 }]);
-        world.resize(150.0 * 13.0, 42.0 * 27.0, 13.0, 27.0);
-        for _ in 0..60 {
-            world.step(STEP);
-        }
-        world
-    }
-
-    fn snout_distance(world: &World, x: f64, y: f64) -> f64 {
-        (world.sharks[0].nodes[0] as f64 - x).hypot(world.sharks[0].nodes[1] as f64 - y)
-    }
-
-    /// A click just ahead of a shark's snout turns it away; without the click it swims on into the spot.
-    #[test]
-    fn sharks_flee_a_click() {
-        let (mut calm, mut scared) = (scene(), scene());
-        let sh = &scared.sharks[0];
-        let ahead = sh.length * 0.4;
-        let (x, y) = (sh.nodes[0] as f64 + sh.heading.cos() * ahead, sh.nodes[1] as f64 + sh.heading.sin() * ahead);
-        scared.disturb(x, y);
-        for _ in 0..90 {
-            calm.step(STEP);
-            scared.step(STEP);
-        }
-        let (d_calm, d_scared) = (snout_distance(&calm, x, y), snout_distance(&scared, x, y));
-        eprintln!("snout distance to click after 1.5 s: calm {d_calm:.0} px, scared {d_scared:.0} px (was {ahead:.0})");
-        assert!(d_scared > d_calm + 50.0 && d_scared > ahead);
-    }
-
-    /// The ripple is one ring of direction-following glyphs at the expected radius.
-    #[test]
-    fn ripple_draws_a_ring() {
-        let (cols, rows, cw, ch) = (90, 30, 13.0, 27.0);
-        let mut world = World::new(Vec::new());
-        world.resize(cols as f64 * cw, rows as f64 * ch, cw, ch);
-        world.fish.clear();
-        let mut renderer = Renderer::new();
-        let mut grid = Grid::new();
-        renderer.resize(cols, rows, cw, ch);
-        grid.resize(cols, rows);
-        let (x, y) = (45.0 * cw, 15.0 * ch);
-        renderer.ripple(x, y, 0.0);
-        world.time = 0.6;
-        renderer.render(&mut world, 1.0 / 30.0, &mut grid);
-
-        let ring: Vec<usize> = (0..cols * rows).filter(|&i| "()~/\\".contains(grid.glyph[i])).collect();
-        for g in ['(', ')', '~', '/', '\\'] {
-            assert!(ring.iter().any(|&i| grid.glyph[i] == g), "no {g:?} in the ring");
-        }
-        // Every ring cell sits on one of the three rings (ages 0.6, 0.38, 0.16 s).
-        let radii: Vec<f64> = (0..3).map(|k| cw + (0.6 - k as f64 * 0.22) * 240.0).collect();
-        for &i in &ring {
-            let d = (((i % cols) as f64 + 0.5) * cw - x).hypot(((i / cols) as f64 + 0.5) * ch - y);
-            // A ring cell may sit up to half a cell's diagonal off the exact radius.
-            assert!(radii.iter().any(|r| (d - r).abs() <= cw.hypot(ch) / 2.0), "stray ring cell at distance {d:.0}");
-        }
-        let picture: String = (5..25)
-            .map(|r| grid.glyph[r * cols + 15..r * cols + 75].iter().collect::<String>() + "\n")
-            .collect();
-        eprintln!("{picture}");
-    }
-}
-
-#[cfg(test)]
-mod screenshot {
-    use super::*;
-    use renderer::DEFAULT_BG;
-    use std::fmt::Write;
-
-    /// Renders a real frame to SVG for the README:
-    /// `SHARKS_SVG=../docs/screenshot.svg cargo test --release screenshot`
-    #[test]
-    fn screenshot_svg() {
-        let Ok(path) = std::env::var("SHARKS_SVG") else { return };
-        let (cols, rows, cw, ch) = (96, 28, 13.0, 27.0);
-        let env = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
-        let (seed, steps) = (env("SHARKS_SVG_SEED", 42), env("SHARKS_SVG_STEPS", 600) as usize);
-        math::seed(seed);
-        let kinds = "greathammer,tiger,hammerhead,zebra";
-        let mut world = World::new(demo_sizes(&parse_kinds(kinds)));
-        let mut renderer = Renderer::new();
-        let mut grid = Grid::new();
-        renderer.resize(cols, rows, cw, ch);
-        world.resize(cols as f64 * cw, rows as f64 * ch, cw, ch);
-        grid.resize(cols, rows);
-        for i in 0..steps {
-            if i + 40 == steps {
-                renderer.ripple(24.0 * cw, 9.0 * ch, world.time);
-            }
-            world.step(STEP);
-            if i % 2 == 1 {
-                renderer.render(&mut world, 1.0 / 30.0, &mut grid);
-            }
-        }
-
-        // Cell size in the picture; same height/width as a typical terminal cell.
-        let (w, h) = (9.0, 19.0);
-        let hex = |c: u32| format!("#{c:06x}");
-        let mut svg = String::new();
-        let _ = write!(
-            svg,
-            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="15" font-weight="600">"#,
-            cols as f64 * w,
-            rows as f64 * h
-        );
-        svg += r##"<rect width="100%" height="100%" fill="#000"/>"##;
-        for i in 0..cols * rows {
-            if grid.bg[i] != DEFAULT_BG {
-                let (x, y) = ((i % cols) as f64 * w, (i / cols) as f64 * h);
-                let _ = write!(svg, r#"<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{}"/>"#, hex(grid.bg[i]));
-            }
-        }
-        // One <text> per run of same-coloured glyphs in a row, each glyph placed on its cell.
-        for r in 0..rows {
-            let mut c = 0;
-            while c < cols {
-                let i = r * cols + c;
-                if grid.glyph[i] == ' ' {
-                    c += 1;
-                    continue;
-                }
-                let fg = grid.fg[i];
-                let (mut xs, mut text) = (String::new(), String::new());
-                while c < cols && grid.glyph[r * cols + c] != ' ' && grid.fg[r * cols + c] == fg {
-                    let _ = write!(xs, "{} ", c as f64 * w + w / 2.0);
-                    match grid.glyph[r * cols + c] {
-                        '&' => text += "&amp;",
-                        '<' => text += "&lt;",
-                        g => text.push(g),
-                    }
-                    c += 1;
-                }
-                let _ = write!(
-                    svg,
-                    r#"<text x="{}" y="{}" fill="{}" text-anchor="middle" xml:space="preserve">{text}</text>"#,
-                    xs.trim_end(),
-                    r as f64 * h + h * 0.72,
-                    hex(fg)
-                );
-            }
-        }
-        svg += "</svg>\n";
-        std::fs::write(path, svg).unwrap();
-    }
-}
-
-#[cfg(test)]
-mod lineup_tests {
-    use super::*;
-
-    #[test]
-    fn random_kinds_are_distinct_until_they_run_out() {
-        for n in 1..=8 {
-            let mut kinds = random_kinds(n);
-            assert_eq!(kinds.len(), n);
-            kinds.sort_by_key(|k| k.name());
-            kinds.dedup();
-            assert_eq!(kinds.len(), n, "repeated a kind among {n}");
-        }
-        assert_eq!(random_kinds(12).len(), 12);
-    }
-
-    #[test]
-    fn random_sizes_have_one_full_size_shark() {
-        for _ in 0..200 {
-            let specs = random_sizes(&random_kinds(5));
-            assert_eq!(specs.iter().filter(|s| s.size == 1.0).count(), 1);
-            assert!(specs.iter().all(|s| (MIN_SIZE..=1.0).contains(&s.size)));
-        }
     }
 }

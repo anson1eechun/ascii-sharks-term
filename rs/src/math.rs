@@ -67,7 +67,6 @@ pub fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Shortest signed angle from a to b, in (-PI, PI].
 pub fn angle_diff(a: f64, b: f64) -> f64 {
     let mut d = (b - a) % TAU;
     if d > PI {
@@ -79,9 +78,9 @@ pub fn angle_diff(a: f64, b: f64) -> f64 {
     d
 }
 
-/// Cheap integer hash → [0, 1). Deterministic, so textures stay stable.
 pub fn hash3(x: i32, y: i32, z: i32) -> f64 {
-    let mut h = x.wrapping_mul(374_761_393) ^ y.wrapping_mul(668_265_263) ^ z.wrapping_mul(1_442_695_041);
+    let mut h =
+        x.wrapping_mul(374_761_393) ^ y.wrapping_mul(668_265_263) ^ z.wrapping_mul(1_442_695_041);
     h = (h ^ ((h as u32) >> 13) as i32).wrapping_mul(1_274_126_177);
     h ^= ((h as u32) >> 16) as i32;
     h as u32 as f64 / 4_294_967_296.0
@@ -92,15 +91,13 @@ const K2: f64 = 1.0 / 310.0;
 const K3: f64 = 1.0 / 190.0;
 const CURRENT_SCALE: f64 = 3400.0;
 
-/// Divergence-free ocean current: the curl of a slowly drifting stream
-/// function ψ(x, y, t), so it moves schools around without bunching them up.
 pub fn current(x: f64, y: f64, t: f64) -> (f64, f64) {
     let a = x * K1 + t * 0.07;
     let b = y * K2 - t * 0.05;
     let c = (x + y) * K3 + t * 0.11;
-    // u = ∂ψ/∂y, v = -∂ψ/∂x with ψ = sin(a)cos(b) + 0.5 sin(c)
+    let cc = c.cos();
     (
-        (-K2 * a.sin() * b.sin() + 0.5 * K3 * c.cos()) * CURRENT_SCALE,
-        (-K1 * a.cos() * b.cos() - 0.5 * K3 * c.cos()) * CURRENT_SCALE,
+        (-K2 * a.sin() * b.sin() + 0.5 * K3 * cc) * CURRENT_SCALE,
+        (-K1 * a.cos() * b.cos() - 0.5 * K3 * cc) * CURRENT_SCALE,
     )
 }
