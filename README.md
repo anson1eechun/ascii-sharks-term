@@ -238,7 +238,7 @@ cargo run --release            # try it
 **Releasing** is automatic. Bump the version in `rs/Cargo.toml`, commit, and push a matching tag:
 
 ```sh
-git tag v0.3.0 && git push origin v0.3.0
+git tag v0.4.0 && git push origin v0.4.0
 ```
 
 [The Release workflow](.github/workflows/release.yml) then:

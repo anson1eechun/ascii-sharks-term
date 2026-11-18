@@ -240,7 +240,7 @@ cargo run --release            # 試跑
 **發佈新版本是全自動的**。改 `rs/Cargo.toml` 的版本號並 commit，再推上對應的標籤：
 
 ```sh
-git tag v0.3.0 && git push origin v0.3.0
+git tag v0.4.0 && git push origin v0.4.0
 ```
 
 接著 [Release 流程](.github/workflows/release.yml) 會：
