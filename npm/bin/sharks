@@ -1,0 +1,26 @@
+#!/bin/sh
+# npm launcher: hands over to the prebuilt native binary for this machine.
+# exec, so no wrapper process (and no Node.js) stays running behind it.
+
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+root=$(cd "$(dirname "$self")/.." && pwd)
+
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) target=aarch64-apple-darwin ;;
+  Darwin-x86_64) target=x86_64-apple-darwin ;;
+  Linux-aarch64 | Linux-arm64) target=aarch64-unknown-linux-musl ;;
+  Linux-x86_64) target=x86_64-unknown-linux-musl ;;
+  *)
+    echo "sharks: no prebuilt binary for $(uname -s) $(uname -m); try: cargo install --git https://github.com/anson1eechun/ascii-sharks-term sharks" >&2
+    exit 1
+    ;;
+esac
+
+exec "$root/vendor/$target/sharks" "$@"

@@ -1,0 +1,20 @@
+{
+  "name": "ascii-sharks-term",
+  "version": "0.1.0",
+  "description": "ASCII sharks and fish schools in your terminal: a tiny native port of stackedlol/ascii-sharks",
+  "license": "MIT",
+  "author": "Lee Chun Sheng (https://github.com/anson1eechun)",
+  "homepage": "https://github.com/anson1eechun/ascii-sharks-term#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anson1eechun/ascii-sharks-term.git"
+  },
+  "bugs": "https://github.com/anson1eechun/ascii-sharks-term/issues",
+  "keywords": ["ascii", "ascii-art", "terminal", "cli", "animation", "screensaver", "shark", "fish"],
+  "bin": {
+    "sharks": "bin/sharks"
+  },
+  "files": ["bin", "vendor", "LICENSE", "README.md"],
+  "os": ["darwin", "linux"],
+  "cpu": ["arm64", "x64"]
+}
