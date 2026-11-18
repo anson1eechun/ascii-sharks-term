@@ -142,7 +142,7 @@ cargo run --release            # 試跑
 | `rs/src/term.rs` | 只用 libc 的終端機 I/O：raw mode、視窗大小、訊號、輸入，以及只重畫變動格子的 24-bit ANSI 輸出 |
 | `rs/src/main.rs` | 參數、主迴圈、鍵盤和滑鼠，取代原作的 `engine.ts` |
 | `upstream/` | 原作的 git submodule，固定在驗證過的版本 |
-| `cell-canvas.ts`、`sharks.ts` | 早期的 Bun 版。`verify/` 靠它在終端機尺寸的網格上執行原作 |
+| `cell-canvas.ts` | 取代瀏覽器 canvas，讓 `verify/` 能在終端機尺寸的網格上執行原作的渲染器 |
 | `npm/` | npm 套件的啟動腳本和設定檔 |
 
 **發佈新版本是全自動的**。改 `rs/Cargo.toml` 的版本號並 commit，再推上對應的標籤：

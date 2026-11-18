@@ -1,10 +1,6 @@
 #!/bin/sh
-# Manual fallback for what the Release workflow does after building: publish a
-# release to the Homebrew tap and to npm. Safe to re-run: parts already
-# published are skipped. The npm part needs `npm login` and, with 2FA, an
-# interactive terminal.
-#
-#   scripts/publish.sh v0.2.0 [--dry-run]
+# Manual fallback for the Release workflow's npm and Homebrew jobs; skips what's out.
+#   scripts/publish.sh v0.2.0 [--dry-run]   (npm with 2FA needs an interactive terminal)
 set -eu
 
 tag=${1:?usage: scripts/publish.sh vX.Y.Z [--dry-run]}
@@ -20,7 +16,6 @@ trap 'rm -rf "$tmp"' EXIT
 gh release download "$tag" --repo "$repo" --dir "$tmp/assets"
 (cd "$tmp/assets" && shasum -a 256 -c SHA256SUMS)
 
-# ── Homebrew ─────────────────────────────────────────────────────────────
 gh repo clone "$tap" "$tmp/tap" -- --quiet
 mkdir -p "$tmp/tap/Formula"
 "$here/scripts/formula.sh" "$tag" "$tmp/assets/SHA256SUMS" > "$tmp/tap/Formula/sharks.rb"
@@ -36,7 +31,6 @@ else
   echo "homebrew: published sharks $version"
 fi
 
-# ── npm ──────────────────────────────────────────────────────────────────
 if [ "$(npm view "$package@$version" version 2>/dev/null)" = "$version" ]; then
   echo "npm: $package@$version already published"
   exit 0

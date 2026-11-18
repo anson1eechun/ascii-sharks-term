@@ -1,12 +1,5 @@
-/**
- * Stands in for the browser canvas so upstream's AsciiRenderer runs unmodified.
- * The renderer only ever draws cell-aligned: a large fillRect is a shark's skin
- * (cell background), a small fillRect is a wake dot, fillText is one glyph.
- * Each call is snapped to the cell it lands in and recorded in a grid that the
- * terminal writer then diffs and emits as 24-bit ANSI.
- */
+// A canvas stand-in that lets upstream's AsciiRenderer draw into a grid of cells (used by verify/).
 
-/** Cell background left to the terminal's own colour. */
 export const DEFAULT_BG = -1;
 const DOT_GLYPH = "·";
 
@@ -14,7 +7,6 @@ type Rgba = [rgb: number, alpha: number];
 
 const colorCache = new Map<string, Rgba>();
 
-/** Parses the three forms the renderer emits: #rrggbb, rgb(...), rgba(...). */
 function parseColor(s: string): Rgba {
   let c = colorCache.get(s);
   if (c) return c;
@@ -39,13 +31,11 @@ function over(rgb: number, alpha: number, under: number) {
 }
 
 export class CellCanvas {
-  // Written by AsciiRenderer.resize(); unused here.
   width = 0;
   height = 0;
 
   cols = 0;
   rows = 0;
-  /** Virtual pixel size of one cell, matching the renderer's cw/ch. */
   cw = 1;
   ch = 1;
   glyph: string[] = [];
@@ -83,7 +73,6 @@ export class CellCanvas {
 }
 
 class CellContext {
-  // Set by the renderer, irrelevant to a character grid.
   font = "";
   textAlign = "";
   textBaseline = "";
@@ -115,7 +104,6 @@ class CellContext {
     const i = g.cellAt(x + w / 2, y + h / 2);
     if (i < 0) return;
     if (w >= g.cw / 2) {
-      // Shark skin: the block behind the glyph.
       g.bg[i] = over(this.rgb, this.alpha, g.bg[i]);
       g.glyph[i] = " ";
     } else {
@@ -133,7 +121,6 @@ class CellContext {
   }
 }
 
-/** Absorbs everything: the renderer's offscreen background canvas only draws grid lines. */
 export const nullCanvas = {
   width: 0,
   height: 0,

@@ -1,13 +1,8 @@
-/**
- * The TypeScript side of the differential test: runs upstream's World and
- * AsciiRenderer (through cell-canvas.ts) on a fixed seed and scene, and writes
- * the final frame in the same format as the Rust test `dump_frame`.
- *
- *   bun verify/upstream-dump.ts <out.txt> [steps=240]     (env SHARKS_DUMP_FORCE=1 to force eat/respawn)
- */
+// Upstream's side of verify.sh, mirroring the Rust test dump_frame:
+//   bun verify/upstream-dump.ts <out.txt> [steps=240]   (SHARKS_DUMP_FORCE=1 forces eat/respawn)
 const root = `${import.meta.dir}/..`;
 
-// mulberry32, identical to rs/src/math.rs random().
+// mulberry32, as in rs/src/math.rs.
 let state = 42;
 Math.random = () => {
   state = (state + 0x6d2b79f5) | 0;
@@ -25,7 +20,6 @@ const [outPath, stepsArg] = process.argv.slice(2);
 const steps = Number(stepsArg ?? 240);
 const force = Boolean(process.env.SHARKS_DUMP_FORCE);
 
-// Must match dump_frame in rs/src/main.rs.
 const cols = 150, rows = 42, cw = 13, ch = 27;
 const kinds = ["hammerhead", "tiger", "zebra", "greathammer", "thresher"];
 const world = new World(kinds.map((kind, i) => ({ kind, size: Math.max(0.3, 1 - i * 0.1) })));

@@ -1,9 +1,6 @@
 #!/bin/sh
-# Differential test: the Rust port must draw exactly what upstream's TypeScript
-# draws, cell for cell, on the same seed. Compares 34 frames over the first ~2 s
-# (after that, 1-ulp libm differences get amplified by the chaotic fish sim and
-# the runs drift apart, which is expected), half of them with eating and
-# respawning forced early.
+# The Rust port must draw exactly what upstream's TypeScript draws, cell for cell, on
+# the same seed. Only the first ~2 s compare: then 1-ulp libm differences take over.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 tmp=$(mktemp -d)

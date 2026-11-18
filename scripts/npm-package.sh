@@ -1,8 +1,5 @@
 #!/bin/sh
-# Assembles the npm package for a release from its downloaded assets: the
-# launcher, every target's binary, and the version taken from the tag.
-#
-#   scripts/npm-package.sh v0.2.0 <assets dir> <output dir>
+# scripts/npm-package.sh v0.2.0 <release assets dir> <output dir>
 set -eu
 
 tag=$1
@@ -17,8 +14,9 @@ sed "s/\"version\": \".*\"/\"version\": \"${tag#v}\"/" "$here/npm/package.json" 
 
 unpack=$(mktemp -d)
 trap 'rm -rf "$unpack"' EXIT
-for t in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
-  tar -xzf "$assets/sharks-$tag-$t.tar.gz" -C "$unpack" "sharks-$tag-$t/sharks"
-  mkdir -p "$out/vendor/$t"
-  mv "$unpack/sharks-$tag-$t/sharks" "$out/vendor/$t/sharks"
+for archive in "$assets"/sharks-"$tag"-*.tar.gz; do
+  name=$(basename "$archive" .tar.gz)
+  tar -xzf "$archive" -C "$unpack" "$name/sharks"
+  mkdir -p "$out/vendor/${name#sharks-"$tag"-}"
+  mv "$unpack/$name/sharks" "$out/vendor/${name#sharks-"$tag"-}/sharks"
 done

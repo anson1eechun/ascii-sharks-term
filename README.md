@@ -140,7 +140,7 @@ cargo run --release            # try it
 | `rs/src/term.rs` | Terminal I/O on plain libc: raw mode, size, signals, input, a diffing 24-bit ANSI writer |
 | `rs/src/main.rs` | Options, frame loop, keyboard and mouse (replaces upstream's `engine.ts`) |
 | `upstream/` | Git submodule of the original, pinned to the verified commit |
-| `cell-canvas.ts`, `sharks.ts` | An earlier Bun port. `verify/` uses it to run upstream in a terminal-sized grid |
+| `cell-canvas.ts` | A canvas stand-in that lets `verify/` run upstream's renderer in a terminal-sized grid |
 | `npm/` | npm package: the launcher and its manifest |
 
 **Releasing** is automatic. Bump the version in `rs/Cargo.toml`, commit, and push a matching tag:

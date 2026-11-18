@@ -1,22 +1,21 @@
 #!/bin/sh
-# Prints the Homebrew formula for a release, from that release's SHA256SUMS.
-#
-#   scripts/formula.sh v0.2.0 path/to/SHA256SUMS > Formula/sharks.rb
+# scripts/formula.sh v0.2.0 path/to/SHA256SUMS > Formula/sharks.rb
 set -eu
 
 tag=$1
 sums=$2
 repo=anson1eechun/ascii-sharks-term
 
-sha() { awk -v f="sharks-$tag-$1.tar.gz" '$2 == f { print $1 }' "$sums"; }
+sha() {
+  awk -v f="sharks-$tag-$1.tar.gz" '$2 == f { print $1; found = 1 } END { exit !found }' "$sums" ||
+    { echo "formula.sh: no checksum for $1 in $sums" >&2; exit 1; }
+}
 url() { echo "https://github.com/$repo/releases/download/$tag/sharks-$tag-$1.tar.gz"; }
 
-for t in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
-  if [ -z "$(sha "$t")" ]; then
-    echo "formula.sh: no checksum for $t in $sums" >&2
-    exit 1
-  fi
-done
+mac_arm=$(sha aarch64-apple-darwin)
+mac_intel=$(sha x86_64-apple-darwin)
+linux_arm=$(sha aarch64-unknown-linux-musl)
+linux_intel=$(sha x86_64-unknown-linux-musl)
 
 cat <<EOF
 class Sharks < Formula
@@ -27,22 +26,22 @@ class Sharks < Formula
   on_macos do
     on_arm do
       url "$(url aarch64-apple-darwin)"
-      sha256 "$(sha aarch64-apple-darwin)"
+      sha256 "$mac_arm"
     end
     on_intel do
       url "$(url x86_64-apple-darwin)"
-      sha256 "$(sha x86_64-apple-darwin)"
+      sha256 "$mac_intel"
     end
   end
 
   on_linux do
     on_arm do
       url "$(url aarch64-unknown-linux-musl)"
-      sha256 "$(sha aarch64-unknown-linux-musl)"
+      sha256 "$linux_arm"
     end
     on_intel do
       url "$(url x86_64-unknown-linux-musl)"
-      sha256 "$(sha x86_64-unknown-linux-musl)"
+      sha256 "$linux_intel"
     end
   end
 

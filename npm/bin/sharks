@@ -1,6 +1,5 @@
 #!/bin/sh
-# npm launcher: hands over to the prebuilt native binary for this machine.
-# exec, so no wrapper process (and no Node.js) stays running behind it.
+# exec, so no wrapper process stays running behind the native binary.
 
 self=$0
 while [ -L "$self" ]; do
@@ -14,7 +13,10 @@ root=$(cd "$(dirname "$self")/.." && pwd)
 
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) target=aarch64-apple-darwin ;;
-  Darwin-x86_64) target=x86_64-apple-darwin ;;
+  Darwin-x86_64)
+    target=x86_64-apple-darwin
+    [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ] && target=aarch64-apple-darwin
+    ;;
   Linux-aarch64 | Linux-arm64) target=aarch64-unknown-linux-musl ;;
   Linux-x86_64) target=x86_64-unknown-linux-musl ;;
   *)
