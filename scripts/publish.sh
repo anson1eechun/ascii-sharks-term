@@ -36,7 +36,6 @@ cat > "$tmp/tap/Formula/sharks.rb" <<EOF
 class Sharks < Formula
   desc "ASCII sharks and fish schools in your terminal"
   homepage "https://github.com/$repo"
-  version "$version"
   license "MIT"
 
   on_macos do
