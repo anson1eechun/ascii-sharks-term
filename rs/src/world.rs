@@ -81,14 +81,6 @@ pub struct SharkSpec {
     pub size: f64,
 }
 
-// The landing hero: four of the same shark at different depths.
-pub const DEFAULT_SHARKS: [SharkSpec; 4] = [
-    SharkSpec { kind: SharkKind::Classic, size: 1.0 },
-    SharkSpec { kind: SharkKind::Classic, size: 0.7 },
-    SharkSpec { kind: SharkKind::Classic, size: 0.84 },
-    SharkSpec { kind: SharkKind::Classic, size: 0.77 },
-];
-
 #[derive(Clone, Copy)]
 pub struct Fish {
     pub x: f64,

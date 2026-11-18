@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use math::{clamp, js_round};
 use renderer::{Grid, Renderer};
-use world::{DEFAULT_SHARKS, SharkKind, SharkSpec, World};
+use world::{SharkKind, SharkSpec, World};
 
 const STEP: f64 = 1.0 / 60.0;
 const MAX_STEPS: u32 = 4;
@@ -28,14 +28,16 @@ const HELP_EN: &str = "sharks — ASCII sharks and fish schools in your terminal
 
 Usage: sharks [options]
 
-  -k, --sharks <kind,...>  Which sharks to show; the first is biggest, the rest
-                           step down (default: 4 classic)
+  -k, --sharks <kind,...>  Which sharks to show (default: different kinds at random)
+  -n, --count <n>          How many random sharks, 1–12 (default 4; ignored with -k)
   -l, --list               List the shark kinds
   -f, --fps <n>            Frames per second (default 30; lower uses less CPU)
   -S, --screensaver        Screensaver mode: any key quits
       --aspect <n>         Cell height / width (default: ask the terminal, else 2.1)
   -V, --version            Show the version
   -h, --help               Show this help
+
+Every shark gets its own random size, so no two runs look alike.
 
 While running: q / Esc quit, p pause, move the mouse to scare the fish,
                click to make a ripple: the fish scatter and nearby sharks turn away.
@@ -46,14 +48,16 @@ const HELP_ZH: &str = "sharks — 終端機裡的 ASCII 鯊魚與魚群
 
 用法: sharks [選項]
 
-  -k, --sharks <種類,...>  要放哪些鯊魚，第一隻最大，後面依序縮小
-                           預設：4 隻 classic
+  -k, --sharks <種類,...>  指定要放哪些鯊魚（預設：隨機挑選不同種類）
+  -n, --count <n>          隨機鯊魚的數量，1～12（預設 4；有 -k 時不使用）
   -l, --list               列出所有鯊魚種類（英文代號與中文名）
   -f, --fps <n>            每秒畫面數（預設 30，越低越省資源）
   -S, --screensaver        螢幕保護模式：按任意鍵離開
       --aspect <n>         字元格高寬比（預設自動偵測，失敗時用 2.1）
   -V, --version            顯示版本
   -h, --help               顯示這段說明
+
+每隻鯊魚的大小都是隨機的，每次執行都不一樣。
 
 執行中：q / Esc 離開　p 暫停　滑鼠移動驚動魚群
         點擊泛起漣漪：魚群四散，附近的鯊魚轉向逃開
@@ -76,8 +80,13 @@ fn t(en: &'static str, zh_text: &'static str) -> &'static str {
     if zh() { zh_text } else { en }
 }
 
+/// The smallest shark, relative to the biggest one in the water.
+const MIN_SIZE: f64 = 0.55;
+
 struct Options {
-    sharks: Vec<SharkSpec>,
+    /// From -k; otherwise `count` kinds are picked at random.
+    kinds: Option<Vec<SharkKind>>,
+    count: usize,
     fps: f64,
     screensaver: bool,
     aspect: Option<f64>,
@@ -89,7 +98,7 @@ fn fail(msg: &str) -> ! {
 }
 
 fn parse_args() -> Options {
-    let mut opts = Options { sharks: DEFAULT_SHARKS.to_vec(), fps: 30.0, screensaver: false, aspect: None };
+    let mut opts = Options { kinds: None, count: 4, fps: 30.0, screensaver: false, aspect: None };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let (flag, inline) = match arg.split_once('=') {
@@ -118,7 +127,13 @@ fn parse_args() -> Options {
                 exit(0);
             }
             "-S" | "--screensaver" => opts.screensaver = true,
-            "-k" | "--sharks" => opts.sharks = parse_sharks(&value()),
+            "-k" | "--sharks" => opts.kinds = Some(parse_kinds(&value())),
+            "-n" | "--count" => {
+                opts.count = match value().parse() {
+                    Ok(n @ 1..=12) => n,
+                    _ => fail(t("--count must be between 1 and 12", "--count 要介於 1 到 12")),
+                };
+            }
             "-f" | "--fps" => {
                 let fps: f64 = value().parse().unwrap_or(f64::NAN);
                 if !(1.0..=120.0).contains(&fps) {
@@ -140,8 +155,7 @@ fn parse_args() -> Options {
     opts
 }
 
-/// Same sizing as upstream's demo.ts: the first shark is biggest, the rest step down.
-fn parse_sharks(list: &str) -> Vec<SharkSpec> {
+fn parse_kinds(list: &str) -> Vec<SharkKind> {
     let names: Vec<&str> = list.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
     let unknown: Vec<&str> = names.iter().copied().filter(|n| SharkKind::parse(n).is_none()).collect();
     if !unknown.is_empty() {
@@ -152,11 +166,37 @@ fn parse_sharks(list: &str) -> Vec<SharkSpec> {
             format!("unknown shark kind: {unknown} (see -l)")
         });
     }
-    names
+    names.iter().map(|n| SharkKind::parse(n).unwrap()).collect()
+}
+
+/// `n` kinds at random: all different while there are enough kinds to go round.
+fn random_kinds(n: usize) -> Vec<SharkKind> {
+    let mut kinds = SharkKind::ALL.to_vec();
+    // Fisher–Yates.
+    for i in (1..kinds.len()).rev() {
+        kinds.swap(i, (math::random() * (i + 1) as f64) as usize);
+    }
+    (0..n)
+        .map(|i| kinds.get(i).copied().unwrap_or_else(|| kinds[(math::random() * kinds.len() as f64) as usize]))
+        .collect()
+}
+
+/// One shark at full size, the rest anywhere from MIN_SIZE up. Upstream reads size
+/// as depth too, so the smaller ones also swim deeper and dimmer.
+fn random_sizes(kinds: &[SharkKind]) -> Vec<SharkSpec> {
+    let biggest = (math::random() * kinds.len() as f64) as usize;
+    kinds
         .iter()
         .enumerate()
-        .map(|(i, n)| SharkSpec { kind: SharkKind::parse(n).unwrap(), size: (1.0 - i as f64 * 0.1).max(0.3) })
+        .map(|(i, &kind)| SharkSpec { kind, size: if i == biggest { 1.0 } else { math::rand(MIN_SIZE, 1.0) } })
         .collect()
+}
+
+/// Upstream demo.ts sizing (the first is biggest, the rest step down), for
+/// scenes that must match upstream.
+#[cfg(test)]
+fn demo_sizes(kinds: &[SharkKind]) -> Vec<SharkSpec> {
+    kinds.iter().enumerate().map(|(i, &kind)| SharkSpec { kind, size: (1.0 - i as f64 * 0.1).max(0.3) }).collect()
 }
 
 /// Upstream sizes cells from the canvas width (width / 124, clamped to 8–13 px).
@@ -266,7 +306,7 @@ impl App {
 /// Same fixed-timestep scheme as upstream's engine.ts, paced by poll() on stdin.
 fn run(opts: &Options, aspect: f64) -> io::Result<()> {
     let mut app = App {
-        world: World::new(opts.sharks.clone()),
+        world: World::new(random_sizes(&opts.kinds.clone().unwrap_or_else(|| random_kinds(opts.count)))),
         renderer: Renderer::new(),
         grid: Grid::new(),
         screen: term::Screen::new(),
@@ -368,7 +408,7 @@ mod tests {
         let (cols, rows, cw, ch) = (150, 42, 13.0, 27.0);
         math::seed(42);
         let kinds = ["hammerhead", "tiger", "zebra", "greathammer", "thresher"];
-        let mut world = World::new(parse_sharks(&kinds.join(",")));
+        let mut world = World::new(demo_sizes(&parse_kinds(&kinds.join(","))));
         let mut renderer = Renderer::new();
         let mut grid = Grid::new();
         renderer.resize(cols, rows, cw, ch);
@@ -511,7 +551,7 @@ mod screenshot {
         let (seed, steps) = (env("SHARKS_SVG_SEED", 42), env("SHARKS_SVG_STEPS", 600) as usize);
         math::seed(seed);
         let kinds = "greathammer,tiger,hammerhead,zebra";
-        let mut world = World::new(parse_sharks(kinds));
+        let mut world = World::new(demo_sizes(&parse_kinds(kinds)));
         let mut renderer = Renderer::new();
         let mut grid = Grid::new();
         renderer.resize(cols, rows, cw, ch);
@@ -575,5 +615,31 @@ mod screenshot {
         }
         svg += "</svg>\n";
         std::fs::write(path, svg).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod lineup_tests {
+    use super::*;
+
+    #[test]
+    fn random_kinds_are_distinct_until_they_run_out() {
+        for n in 1..=8 {
+            let mut kinds = random_kinds(n);
+            assert_eq!(kinds.len(), n);
+            kinds.sort_by_key(|k| k.name());
+            kinds.dedup();
+            assert_eq!(kinds.len(), n, "repeated a kind among {n}");
+        }
+        assert_eq!(random_kinds(12).len(), 12);
+    }
+
+    #[test]
+    fn random_sizes_have_one_full_size_shark() {
+        for _ in 0..200 {
+            let specs = random_sizes(&random_kinds(5));
+            assert_eq!(specs.iter().filter(|s| s.size == 1.0).count(), 1);
+            assert!(specs.iter().all(|s| (MIN_SIZE..=1.0).contains(&s.size)));
+        }
     }
 }
