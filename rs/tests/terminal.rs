@@ -51,7 +51,7 @@ impl Term {
                 &mut slave,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &mut ws,
+                &raw mut ws,
             )
         };
         assert_eq!(opened, 0, "openpty: {}", std::io::Error::last_os_error());
