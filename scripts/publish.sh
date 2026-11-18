@@ -1,6 +1,7 @@
 #!/bin/sh
-# After the Release workflow has built vX.Y.Z, publish it to npm and to the
-# Homebrew tap. Needs gh and npm, both logged in.
+# After the Release workflow has built vX.Y.Z, publish it to the Homebrew tap
+# and to npm. Safe to re-run: parts already published are skipped.
+# Needs gh logged in, and npm logged in for the npm part.
 #
 #   scripts/publish.sh v0.1.0 [--dry-run]
 set -eu
@@ -10,6 +11,7 @@ dry=${2:-}
 version=${tag#v}
 repo=anson1eechun/ascii-sharks-term
 tap=anson1eechun/homebrew-tap
+package=ascii-sharks-term
 targets="aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl"
 here=$(cd "$(dirname "$0")/.." && pwd)
 
@@ -23,23 +25,6 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 gh release download "$tag" --repo "$repo" --dir "$tmp/assets"
 (cd "$tmp/assets" && shasum -a 256 -c SHA256SUMS)
-
-# ── npm: the launcher plus every target's binary ────────────────────────
-pkg=$tmp/npm
-mkdir -p "$pkg"
-cp -R "$here/npm/bin" "$pkg/"
-cp "$here/LICENSE" "$here/README.md" "$pkg/"
-sed "s/\"version\": \".*\"/\"version\": \"$version\"/" "$here/npm/package.json" > "$pkg/package.json"
-for t in $targets; do
-  mkdir -p "$pkg/vendor/$t"
-  tar -xzf "$tmp/assets/sharks-$tag-$t.tar.gz" -C "$tmp" "sharks-$tag-$t/sharks"
-  mv "$tmp/sharks-$tag-$t/sharks" "$pkg/vendor/$t/sharks"
-done
-if [ "$dry" = --dry-run ]; then
-  (cd "$pkg" && npm pack --dry-run)
-else
-  (cd "$pkg" && npm publish --access public)
-fi
 
 # ── Homebrew: a formula pointing at the release assets ──────────────────
 sha() { awk -v f="sharks-$tag-$1.tar.gz" '$2 == f { print $1 }' "$tmp/assets/SHA256SUMS"; }
@@ -86,13 +71,39 @@ class Sharks < Formula
 end
 EOF
 
-cd "$tmp/tap"
-git add Formula/sharks.rb
-if [ "$dry" = --dry-run ]; then
-  cat Formula/sharks.rb
+git -C "$tmp/tap" add Formula/sharks.rb
+if git -C "$tmp/tap" diff --cached --quiet; then
+  echo "homebrew: formula already at $version"
+elif [ "$dry" = --dry-run ]; then
+  cat "$tmp/tap/Formula/sharks.rb"
 else
-  git -c user.name="$(git -C "$here" config user.name)" -c user.email="$(git -C "$here" config user.email)" \
-    commit --quiet -m "sharks $version"
-  git push --quiet origin HEAD:main
+  git -C "$tmp/tap" -c user.name="$(git -C "$here" config user.name)" \
+    -c user.email="$(git -C "$here" config user.email)" commit --quiet -m "sharks $version"
+  git -C "$tmp/tap" push --quiet origin HEAD:main
+  echo "homebrew: published sharks $version"
 fi
-echo "published $tag"
+
+# ── npm: the launcher plus every target's binary ────────────────────────
+if [ "$(npm view "$package@$version" version 2>/dev/null)" = "$version" ]; then
+  echo "npm: $package@$version already published"
+  exit 0
+fi
+pkg=$tmp/npm
+mkdir -p "$pkg"
+cp -R "$here/npm/bin" "$pkg/"
+cp "$here/LICENSE" "$here/README.md" "$pkg/"
+sed "s/\"version\": \".*\"/\"version\": \"$version\"/" "$here/npm/package.json" > "$pkg/package.json"
+for t in $targets; do
+  mkdir -p "$pkg/vendor/$t"
+  tar -xzf "$tmp/assets/sharks-$tag-$t.tar.gz" -C "$tmp" "sharks-$tag-$t/sharks"
+  mv "$tmp/sharks-$tag-$t/sharks" "$pkg/vendor/$t/sharks"
+done
+if [ "$dry" = --dry-run ]; then
+  (cd "$pkg" && npm pack --dry-run)
+elif ! npm whoami >/dev/null 2>&1; then
+  echo "npm: not logged in; run 'npm login', then re-run this script" >&2
+  exit 1
+else
+  (cd "$pkg" && npm publish --access public)
+  echo "npm: published $package@$version"
+fi
