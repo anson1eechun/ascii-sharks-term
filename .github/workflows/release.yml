@@ -1,7 +1,8 @@
 name: Release
 
-# Push a tag like v0.1.0 to build every target and publish a GitHub release.
-# Then run scripts/publish.sh v0.1.0 to update npm and the Homebrew tap.
+# Push a tag like v0.2.0 (matching rs/Cargo.toml) and this builds every target,
+# publishes the GitHub release, then npm and the Homebrew formula. Every job is
+# safe to re-run: what's already published is skipped.
 on:
   push:
     tags: ["v*"]
@@ -23,6 +24,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Tag matches rs/Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' rs/Cargo.toml | head -n 1)
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME but rs/Cargo.toml is $version"; exit 1; }
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
         working-directory: rs
@@ -46,6 +51,67 @@ jobs:
           path: dist
           merge-multiple: true
       - run: cd dist && sha256sum *.tar.gz > SHA256SUMS
-      - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+      - run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # npm trusted publishing: npm checks the request comes from this workflow
+  # (set up on npmjs.com), so there is no token, and the package gets provenance.
+  npm:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir assets && (cd assets && sha256sum -c SHA256SUMS)
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@latest
+      - run: |
+          version=${GITHUB_REF_NAME#v}
+          if [ "$(npm view "ascii-sharks-term@$version" version 2>/dev/null)" = "$version" ]; then
+            echo "ascii-sharks-term@$version is already on npm"
+            exit 0
+          fi
+          scripts/npm-package.sh "$GITHUB_REF_NAME" assets pkg
+          cd pkg && npm publish --access public
+
+  # Pushes the formula to anson1eechun/homebrew-tap with a deploy key that can
+  # write to that repository only (secret HOMEBREW_TAP_DEPLOY_KEY).
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir assets && (cd assets && sha256sum -c SHA256SUMS)
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          key="$RUNNER_TEMP/tap_key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key" && chmod 600 "$key"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone --depth 1 git@github.com:anson1eechun/homebrew-tap.git tap
+          mkdir -p tap/Formula
+          scripts/formula.sh "$GITHUB_REF_NAME" assets/SHA256SUMS > tap/Formula/sharks.rb
+          cd tap
+          git add Formula/sharks.rb
+          if git diff --cached --quiet; then
+            echo "formula already at $GITHUB_REF_NAME"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "sharks ${GITHUB_REF_NAME#v}"
+          git push origin HEAD:main

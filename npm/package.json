@@ -1,6 +1,6 @@
 {
   "name": "ascii-sharks-term",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "ASCII sharks and fish schools in your terminal: a tiny native port of stackedlol/ascii-sharks",
   "license": "MIT",
   "author": "Lee Chun Sheng (https://github.com/anson1eechun)",

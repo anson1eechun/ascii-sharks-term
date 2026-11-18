@@ -13,6 +13,7 @@
 ## 特色
 
 - **8 種鯊魚**，各有不同的輪廓、鰭和斑紋：兩種雙髻鯊、虎鯊、尖吻鯖鯊、長尾鯊、鉸口鯊、豹紋鯊，以及經典的真鯊。
+- **每次執行都不一樣**。預設會隨機挑選不同種類的鯊魚，每隻的大小也各不相同。
 - **會動的魚群**。數百條魚依照群體行為（boids）成群游動。驚慌會在魚群中傳開，逃跑的魚會往鯊魚路徑的兩側散開。鯊魚專挑落單的魚下手，被吃掉的魚之後會組成新的魚群游回來。
 - **滑鼠互動**。移動滑鼠會驚動魚群。點一下會泛起漣漪：魚群四散，附近的鯊魚會轉身逃開，幾秒內不再獵食。
 - **低資源用量**。記憶體約 2 MB，30 FPS 時約佔單核 CPU 的 6～8%，10 FPS 時約 3%。
@@ -51,15 +52,17 @@ cargo install --locked --git https://github.com/anson1eechun/ascii-sharks-term s
 ## 使用方式
 
 ```sh
-sharks                             # 4 隻 classic 鯊魚
-sharks -k greathammer,tiger,mako   # 自己挑鯊魚，第一隻最大
+sharks                             # 隨機 4 種鯊魚
+sharks -n 8                        # 隨機 8 隻鯊魚
+sharks -k greathammer,tiger,mako   # 自己挑種類（sharks -l 可以看清單）
 sharks -S                          # 螢幕保護模式，按任意鍵離開
 sharks -f 20                       # 降低每秒畫面數，更省 CPU
 ```
 
 | 選項 | |
 |---|---|
-| `-k, --sharks <種類,...>` | 要放哪些鯊魚。第一隻最大，後面依序縮小。 |
+| `-k, --sharks <種類,...>` | 指定要放哪些鯊魚，例如 `tiger,mako,zebra`。同一種可以重複。 |
+| `-n, --count <n>` | 隨機鯊魚的數量，1～12，預設 4。有 `-k` 時不使用。 |
 | `-l, --list` | 列出所有鯊魚種類。 |
 | `-f, --fps <n>` | 每秒畫面數，1～120，預設 30。 |
 | `-S, --screensaver` | 按任意鍵離開。 |
@@ -72,6 +75,8 @@ sharks -f 20                       # 降低每秒畫面數，更省 CPU
 | `p` | 暫停。 |
 | 移動滑鼠 | 魚群會避開游標。 |
 | 點擊 | 泛起漣漪：魚群四散，附近的鯊魚逃開。 |
+
+每隻鯊魚的大小是隨機的，介於最大那隻的 55%～100%。原作把大小也當成深度，所以比較小的鯊魚會游在比較深、比較暗的地方。想要原作的樣子，可以用 `sharks -k classic,classic,classic,classic`。
 
 終端機需要支援 24-bit 全彩和滑鼠回報，例如 Ghostty、iTerm2、WezTerm、kitty、Alacritty。全螢幕效果最好。
 
@@ -140,13 +145,20 @@ cargo run --release            # 試跑
 | `cell-canvas.ts`、`sharks.ts` | 早期的 Bun 版。`verify/` 靠它在終端機尺寸的網格上執行原作 |
 | `npm/` | npm 套件的啟動腳本和設定檔 |
 
-**發佈新版本**。先改 `rs/Cargo.toml` 的版本號，再推上標籤：
+**發佈新版本是全自動的**。改 `rs/Cargo.toml` 的版本號並 commit，再推上對應的標籤：
 
 ```sh
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
-GitHub Actions 會編譯 macOS 和 Linux 的執行檔並建立 Release。之後執行 `scripts/publish.sh v0.2.0`，就會發佈 npm 套件並更新 Homebrew formula。
+接著 [Release 流程](.github/workflows/release.yml) 會：
+
+1. 編譯 macOS 和 Linux 的執行檔
+2. 建立 GitHub Release
+3. 透過 [Trusted Publishing](https://docs.npmjs.com/trusted-publishers) 發佈到 npm。不需要 token，套件會附上來源證明（provenance）。
+4. 用只能寫入 [anson1eechun/homebrew-tap](https://github.com/anson1eechun/homebrew-tap) 的 deploy key 推送 Homebrew formula。金鑰存放在 Secret `HOMEBREW_TAP_DEPLOY_KEY`。
+
+每個步驟都可以安全地重跑，已經發佈的部分會自動跳過。必要時，也可以用 `scripts/publish.sh vX.Y.Z` 手動完成第 3、4 步。
 
 **原作更新時**。更新 submodule，把 `upstream/src` 的改動移植到 `rs/src`，再跑 `verify/verify.sh`，必須是 0 mismatched。
 

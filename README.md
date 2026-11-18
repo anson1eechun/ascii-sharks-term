@@ -13,6 +13,7 @@ ASCII sharks hunting schools of fish in your terminal, in 24-bit colour. A small
 ## Features
 
 - **Eight shark species** with their own outlines, fins and markings: hammerheads, tiger, mako, thresher, nurse, zebra and a classic requiem shark.
+- **Different every run.** By default you get a random mix of species, and every shark has its own size.
 - **Living fish schools.** Hundreds of fish school as boids. Alarm spreads through a school, and fleeing fish break sideways around a shark's path. Sharks pick off stragglers, and eaten fish come back later as new schools.
 - **Mouse interaction.** Move the mouse to scare the fish. Click to make a ripple: the fish scatter, and nearby sharks turn tail and stop hunting for a few seconds.
 - **Light on resources.** About 2 MB of memory, and 6–8% of one CPU core at 30 fps (3% at 10 fps).
@@ -51,15 +52,17 @@ Download a `.tar.gz` for your platform from [Releases](https://github.com/anson1
 ## Usage
 
 ```sh
-sharks                             # four classic sharks
-sharks -k greathammer,tiger,mako   # pick the sharks; the first is biggest
+sharks                             # four random kinds of shark
+sharks -n 8                        # eight random sharks
+sharks -k greathammer,tiger,mako   # pick the kinds yourself (sharks -l lists them)
 sharks -S                          # screensaver: any key quits
 sharks -f 20                       # fewer frames per second, less CPU
 ```
 
 | Option | |
 |---|---|
-| `-k, --sharks <kind,...>` | Which sharks to show. The first is biggest and the rest step down. |
+| `-k, --sharks <kind,...>` | Which sharks to show, such as `tiger,mako,zebra`. You can repeat a kind. |
+| `-n, --count <n>` | How many random sharks, 1–12 (default 4). Ignored with `-k`. |
 | `-l, --list` | List the shark kinds. |
 | `-f, --fps <n>` | Frames per second, 1–120 (default 30). |
 | `-S, --screensaver` | Any key quits. |
@@ -72,6 +75,8 @@ sharks -f 20                       # fewer frames per second, less CPU
 | `p` | Pause. |
 | Mouse move | Fish flee the pointer. |
 | Click | Ripple: fish scatter, nearby sharks flee. |
+
+Each shark gets a random size, from 55% to 100% of the biggest. Upstream treats size as depth, so smaller sharks also swim deeper and dimmer. To get upstream's original look, use `sharks -k classic,classic,classic,classic`.
 
 You need a terminal with 24-bit colour and mouse reporting, such as Ghostty, iTerm2, WezTerm, kitty or Alacritty. Fullscreen looks best.
 
@@ -138,13 +143,20 @@ cargo run --release            # try it
 | `cell-canvas.ts`, `sharks.ts` | An earlier Bun port. `verify/` uses it to run upstream in a terminal-sized grid |
 | `npm/` | npm package: the launcher and its manifest |
 
-**Releasing.** Bump the version in `rs/Cargo.toml`, then push a tag:
+**Releasing** is automatic. Bump the version in `rs/Cargo.toml`, commit, and push a matching tag:
 
 ```sh
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
-GitHub Actions builds macOS and Linux binaries and publishes a release. Then run `scripts/publish.sh v0.2.0` to publish the npm package and update the Homebrew formula.
+[The Release workflow](.github/workflows/release.yml) then:
+
+1. builds the macOS and Linux binaries,
+2. publishes the GitHub release,
+3. publishes to npm through [trusted publishing](https://docs.npmjs.com/trusted-publishers) (no token; the package gets provenance), and
+4. pushes the Homebrew formula to [anson1eechun/homebrew-tap](https://github.com/anson1eechun/homebrew-tap) with a deploy key that can write to that repository only (secret `HOMEBREW_TAP_DEPLOY_KEY`).
+
+Each job can be re-run safely; anything already published is skipped. `scripts/publish.sh vX.Y.Z` does steps 3 and 4 by hand if ever needed.
 
 **Upstream updates.** Bump the submodule, port the changes in `upstream/src` to `rs/src`, and run `verify/verify.sh`. It must report 0 mismatched.
 
