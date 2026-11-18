@@ -32,7 +32,7 @@ fn dump_frame() {
     let (cols, rows, cw, ch) = (150, 42, 13.0, 27.0);
     math::seed(42);
     let kinds = ["hammerhead", "tiger", "zebra", "greathammer", "thresher"];
-    let mut world = World::new(demo_sizes(&parse_kinds(&kinds.join(","))), None);
+    let mut world = World::new(demo_sizes(&parse_kinds(&kinds.join(",")).unwrap()), None);
     let mut renderer = Renderer::new();
     let mut grid = Grid::new();
     renderer.resize(cols, rows, cw, ch);
@@ -213,7 +213,7 @@ fn screenshot_svg() {
     );
     math::seed(seed);
     let kinds = "greathammer,tiger,hammerhead,zebra";
-    let mut world = World::new(demo_sizes(&parse_kinds(kinds)), None);
+    let mut world = World::new(demo_sizes(&parse_kinds(kinds).unwrap()), None);
     let mut renderer = Renderer::new();
     let mut grid = Grid::new();
     renderer.resize(cols, rows, cw, ch);
@@ -313,7 +313,7 @@ fn output_stays_within_budget() {
     renderer.resize(cols, rows, cw, ch);
     world.resize(cols as f64 * cw, rows as f64 * ch, cw, ch);
     grid.resize(cols, rows);
-    let mut screen = term::Screen::new(term::ColorMode::TrueColor, false);
+    let mut screen = screen::Screen::new(screen::ColorMode::TrueColor, false);
     screen.reset(cols * rows);
     let (mut bytes, mut frames) = (0, 0);
     let start = std::time::Instant::now();
@@ -422,4 +422,51 @@ fn raindrops_leave_small_ripples() {
     renderer.render(&mut world, STEP, &mut grid);
     let rings = grid.glyph.iter().filter(|g| "()~/\\".contains(**g)).count();
     assert!((4..60).contains(&rings), "{rings} ripple cells");
+}
+
+#[test]
+fn tiny_and_odd_sizes_do_not_panic() {
+    use crate::clock::{ClockStyle, Overlay};
+    for (cols, rows) in [
+        (0, 5),
+        (5, 0),
+        (1, 1),
+        (2, 1),
+        (1, 2),
+        (5, 5),
+        (3, 40),
+        (200, 2),
+    ] {
+        for style in ClockStyle::ALL {
+            math::seed(1);
+            let (mut world, mut renderer, mut grid) = sized_scene(&[SharkKind::Nurse], cols, rows);
+            renderer.labels = renderer::Labels::Chinese;
+            let mut overlay = Overlay::new(Some(style), true, Some("鯊魚 sharks".into()));
+            world.pointer = world::Pointer {
+                x: 6.0,
+                y: 13.0,
+                active: true,
+            };
+            world.click(6.0, 13.0);
+            world.feed(6.0, 13.0);
+            for _ in 0..3 {
+                world.step(STEP);
+                renderer.render_with(&mut world, STEP, &mut grid, |g| overlay.draw(g));
+            }
+        }
+    }
+}
+
+#[test]
+fn bait_is_capped_and_survives_shrinking() {
+    math::seed(13);
+    let (mut world, ..) = sized_scene(&[], 120, 40);
+    let base = world.fish.len();
+    for _ in 0..10 {
+        world.feed(600.0, 500.0);
+    }
+    assert_eq!(world.fish.iter().filter(|f| f.bait).count(), 120);
+    world.resize(60.0 * 13.0, 20.0 * 27.0, 13.0, 27.0);
+    assert_eq!(world.fish.iter().filter(|f| f.bait).count(), 120);
+    assert!(world.fish.len() < base + 120);
 }

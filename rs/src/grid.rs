@@ -1,11 +1,12 @@
-//! The cell grid everything draws into, and the terminal writer reads from.
-
 use crate::math::js_round;
 
 pub const DEFAULT_BG: u32 = u32::MAX;
 /// The right half of a double-width glyph; the writer skips it.
 pub const WIDE_TAIL: char = '\u{E000}';
 
+/// Cells of glyphs and colours. A wide glyph is always followed by WIDE_TAIL; the
+/// writes below keep it that way when either half is overwritten.
+#[derive(Clone)]
 pub struct Grid {
     pub cols: usize,
     pub rows: usize,
@@ -44,13 +45,31 @@ impl Grid {
     }
 
     pub fn text(&mut self, i: usize, glyph: char, rgb: u32, alpha: f64) {
+        self.claim(i);
         self.fg[i] = over(rgb, alpha, self.bg[i]);
         self.glyph[i] = glyph;
     }
 
     pub fn block(&mut self, i: usize, rgb: u32) {
+        self.claim(i);
         self.bg[i] = rgb;
         self.glyph[i] = ' ';
+    }
+
+    pub fn is_wide(&self, i: usize) -> bool {
+        self.has_wide && (self.glyph[i] == WIDE_TAIL || width(self.glyph[i]) == 2)
+    }
+
+    /// Blanks the other half of a wide glyph about to lose one half.
+    fn claim(&mut self, i: usize) {
+        if !self.is_wide(i) {
+            return;
+        }
+        if self.glyph[i] == WIDE_TAIL {
+            self.glyph[i - 1] = ' ';
+        } else if !(i + 1).is_multiple_of(self.cols) {
+            self.glyph[i + 1] = ' ';
+        }
     }
 
     /// Writes `s` from (row, col), clipped to the grid; `bg` None keeps each cell's background.
@@ -61,6 +80,9 @@ impl Grid {
         let mut c = col;
         for ch in s.chars() {
             let w = width(ch);
+            if w == 0 {
+                continue;
+            }
             if c + w > self.cols {
                 break;
             }
@@ -70,6 +92,7 @@ impl Grid {
             }
             self.text(i, ch, fg, 1.0);
             if w == 2 {
+                self.claim(i + 1);
                 self.bg[i + 1] = self.bg[i];
                 self.glyph[i + 1] = WIDE_TAIL;
                 self.has_wide = true;
@@ -80,7 +103,7 @@ impl Grid {
 }
 
 /// Source-over onto an opaque colour; the default background counts as black.
-pub fn over(rgb: u32, alpha: f64, under: u32) -> u32 {
+fn over(rgb: u32, alpha: f64, under: u32) -> u32 {
     if alpha >= 1.0 {
         return rgb;
     }
@@ -97,9 +120,18 @@ pub const fn rgb(r: u32, g: u32, b: u32) -> u32 {
     (r << 16) | (g << 8) | b
 }
 
-/// Columns a glyph takes: 2 for East Asian wide and fullwidth characters.
+/// Columns a glyph takes: 0 for controls and combining marks, 2 for East Asian wide ones.
 pub fn width(c: char) -> usize {
     match c as u32 {
+        0x00..=0x1F
+        | 0x7F..=0x9F
+        | 0x0300..=0x036F
+        | 0x1AB0..=0x1AFF
+        | 0x1DC0..=0x1DFF
+        | 0x200B..=0x200F
+        | 0x20D0..=0x20FF
+        | 0xFE00..=0xFE0F
+        | 0xFE20..=0xFE2F => 0,
         0x1100..=0x115F
         | 0x2E80..=0x303E
         | 0x3041..=0x33FF
@@ -120,4 +152,38 @@ pub fn width(c: char) -> usize {
 
 pub fn str_width(s: &str) -> usize {
     s.chars().map(width).sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(g: &Grid) -> String {
+        g.glyph
+            .iter()
+            .map(|&c| if c == WIDE_TAIL { '>' } else { c })
+            .collect()
+    }
+
+    #[test]
+    fn wide_glyphs_never_lose_half() {
+        let mut g = Grid::new();
+        g.resize(6, 1);
+        g.put(0, 0, "鯊魚", 0, None);
+        assert_eq!(row(&g), "鯊>魚>  ");
+        g.text(1, 'x', 0, 1.0);
+        assert_eq!(row(&g), " x魚>  ");
+        g.put(0, 2, "a", 0, None);
+        assert_eq!(row(&g), " xa   ");
+    }
+
+    #[test]
+    fn put_clips_and_skips_zero_width() {
+        let mut g = Grid::new();
+        g.resize(5, 1);
+        g.put(0, 2, "e\u{301}虎虎", 0, None);
+        assert_eq!(row(&g), "  e虎>");
+        g.put(0, 4, "虎", 0, None);
+        assert_eq!(row(&g), "  e虎>");
+    }
 }

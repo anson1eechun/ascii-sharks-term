@@ -1,13 +1,14 @@
 use std::io;
-use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
+use crate::cli::Mode;
 use crate::clock::Overlay;
 use crate::grid::Grid;
 use crate::input::{self, Input, MOUSE_BUTTONS, MOUSE_MOTION, MOUSE_WHEEL};
 use crate::math::{self, clamp, js_round};
 use crate::renderer::Renderer;
-use crate::term::{self, ColorMode, Screen};
+use crate::screen::{self, ColorMode, Screen};
+use crate::term;
 use crate::world::World;
 
 pub const STEP: f64 = 1.0 / 60.0;
@@ -20,6 +21,23 @@ const RAIN_PER_SECOND: f64 = 1.2;
 const CTRL_C: u8 = 0x03;
 const CTRL_Z: u8 = 0x1a;
 
+/// Upstream's fixed timestep: how many steps `dt` more seconds take. At most
+/// MAX_STEPS, so a stall doesn't snowball, unless slow frames or a fast --speed
+/// need more every frame.
+fn steps_for(acc: &mut f64, dt: f64) -> u32 {
+    *acc += dt;
+    let max = MAX_STEPS.max((dt / STEP).ceil() as u32);
+    let mut steps = 0;
+    while *acc >= STEP && steps < max {
+        *acc -= STEP;
+        steps += 1;
+    }
+    if steps == max {
+        *acc = 0.0;
+    }
+    steps
+}
+
 pub struct Scene {
     pub world: World,
     pub renderer: Renderer,
@@ -28,8 +46,7 @@ pub struct Scene {
 }
 
 impl Scene {
-    /// Fixes the cell size for the session: upstream's width / 124 rule, clamped to
-    /// 8–13 px, and the terminal's height / width.
+    /// Upstream's width / 124 rule, clamped to 8–13 px, and the cell's height / width.
     fn cell_size(&self, cols: usize) -> (f64, f64) {
         let cw = (8..=13)
             .rev()
@@ -39,36 +56,43 @@ impl Scene {
         (cw, (cw + 1.0).max(js_round(cw * self.aspect)))
     }
 
-    /// Upstream's reduced-motion still: let the sea settle for four seconds first.
+    fn resize(&mut self, cols: usize, rows: usize, (cw, ch): (f64, f64)) {
+        self.renderer.resize(cols, rows, cw, ch);
+        self.world
+            .resize(cols as f64 * cw, rows as f64 * ch, cw, ch);
+    }
+
+    /// Upstream's reduced-motion still: four seconds of sea first.
     fn settle(&mut self) {
-        while self.world.time < 4.0 {
-            self.world.step(STEP);
+        if self.world.time < 4.0 {
+            for _ in 0..240 {
+                self.world.step(STEP);
+            }
         }
     }
 
     fn render(&mut self, dt: f64, grid: &mut Grid) {
-        let overlay = &mut self.overlay;
-        self.renderer.render_with(&mut self.world, dt, grid, |g| {
-            if !overlay.is_empty() {
-                overlay.draw(g);
-            }
-        });
+        self.renderer
+            .render_with(&mut self.world, dt, grid, |g| self.overlay.draw(g));
+    }
+
+    /// A settled sea without the overlay, for laying the clock over again and again.
+    fn render_still(&mut self, grid: &mut Grid) {
+        self.settle();
+        self.renderer
+            .render_with(&mut self.world, STEP, grid, |_| {});
     }
 }
 
-/// Prints one settled frame at the terminal's (or $COLUMNS × $LINES) size.
 pub fn print(mut scene: Scene, mode: ColorMode, ascii: bool) -> io::Result<()> {
     let (cols, rows) = term::size();
-    let (cw, ch) = scene.cell_size(cols);
+    let cell = scene.cell_size(cols);
     let mut grid = Grid::new();
     grid.resize(cols, rows);
-    scene.renderer.resize(cols, rows, cw, ch);
-    scene
-        .world
-        .resize(cols as f64 * cw, rows as f64 * ch, cw, ch);
-    scene.settle();
-    scene.render(STEP, &mut grid);
-    term::write_all(&term::print(&grid, mode, ascii))
+    scene.resize(cols, rows, cell);
+    scene.render_still(&mut grid);
+    scene.overlay.draw(&mut grid);
+    term::write_all(&screen::print(&grid, mode, ascii))
 }
 
 pub struct Settings {
@@ -76,14 +100,20 @@ pub struct Settings {
     pub speed: f64,
     pub rain: bool,
     pub screensaver: bool,
-    pub still: bool,
-    pub mouse: bool,
+    pub mode: Mode,
+}
+
+impl Settings {
+    fn mouse(&self) -> bool {
+        self.mode == Mode::Live && !self.screensaver
+    }
 }
 
 pub struct App {
     scene: Scene,
     settings: Settings,
     grid: Grid,
+    still: Grid,
     screen: Screen,
     cell: Option<(f64, f64)>,
     paused: bool,
@@ -92,6 +122,7 @@ pub struct App {
     next: Instant,
     acc: f64,
     pending: Vec<u8>,
+    inputs: Vec<Input>,
     last_mouse: Instant,
 }
 
@@ -103,6 +134,7 @@ impl App {
             frame: Duration::from_secs_f64(1.0 / settings.fps),
             settings,
             grid: Grid::new(),
+            still: Grid::new(),
             screen,
             cell: None,
             paused: false,
@@ -110,26 +142,26 @@ impl App {
             next: now,
             acc: 0.0,
             pending: Vec::new(),
+            inputs: Vec::new(),
             last_mouse: now,
         }
     }
 
     fn layout(&mut self) -> io::Result<()> {
         let (cols, rows) = term::size();
-        let (cw, ch) = *self.cell.get_or_insert_with(|| self.scene.cell_size(cols));
-        self.scene.renderer.resize(cols, rows, cw, ch);
-        self.scene
-            .world
-            .resize(cols as f64 * cw, rows as f64 * ch, cw, ch);
+        let cell = *self.cell.get_or_insert_with(|| self.scene.cell_size(cols));
+        self.scene.resize(cols, rows, cell);
         self.grid.resize(cols, rows);
         self.screen.reset(cols * rows);
-        if self.settings.still {
-            self.scene.settle();
+        if self.settings.mode == Mode::Still {
+            self.still.resize(cols, rows);
+            self.scene.render_still(&mut self.still);
+            self.draw_still()
+        } else if self.paused {
+            self.draw(0.0)
+        } else {
+            Ok(())
         }
-        if self.paused || self.settings.still {
-            self.draw(0.0)?;
-        }
-        Ok(())
     }
 
     fn draw(&mut self, dt: f64) -> io::Result<()> {
@@ -137,50 +169,50 @@ impl App {
         self.screen.flush(&self.grid)
     }
 
+    fn draw_still(&mut self) -> io::Result<()> {
+        self.grid.clone_from(&self.still);
+        self.scene.overlay.draw(&mut self.grid);
+        self.screen.flush(&self.grid)
+    }
+
     fn tick(&mut self, now: Instant) -> io::Result<()> {
-        let dt = (now - self.last).as_secs_f64().min(0.1) * self.settings.speed;
+        let elapsed = (now - self.last)
+            .as_secs_f64()
+            .min(self.frame.as_secs_f64().max(0.1));
+        let dt = elapsed * self.settings.speed;
         self.last = now;
-        self.acc += dt;
-        let mut steps = 0;
-        while self.acc >= STEP && steps < MAX_STEPS {
+        for _ in 0..steps_for(&mut self.acc, dt) {
             self.scene.world.step(STEP);
-            self.acc -= STEP;
-            steps += 1;
-        }
-        if steps == MAX_STEPS {
-            self.acc = 0.0;
         }
         if self.settings.rain && math::random() < RAIN_PER_SECOND * dt {
             let (x, y) = self.random_point();
             self.scene.world.drop(x, y);
         }
-        let pointer = &mut self.scene.world.pointer;
-        pointer.active &= now - self.last_mouse < POINTER_IDLE;
+        self.scene.world.pointer.active &= now - self.last_mouse < POINTER_IDLE;
         self.draw(dt)
     }
 
     pub fn run(&mut self) -> io::Result<()> {
-        if self.settings.mouse {
+        if self.settings.mouse() {
             term::write_all(term::MOUSE_ON)?;
         }
         self.layout()?;
         loop {
-            if term::TERMINATE.load(Relaxed) {
+            let signals = term::take_signals();
+            if signals.terminate {
                 return Ok(());
             }
-            if term::SUSPEND.swap(false, Relaxed) {
+            if signals.suspend {
                 term::suspend()?;
                 self.resume()?;
-            }
-            if term::CONTINUED.swap(false, Relaxed) {
+            } else if signals.continued {
                 term::enter()?;
                 self.resume()?;
-            }
-            if term::RESIZED.swap(false, Relaxed) {
+            } else if signals.resized {
                 self.layout()?;
             }
 
-            let timeout = if self.settings.still {
+            let timeout = if self.settings.mode == Mode::Still {
                 self.scene.overlay.until_change()
             } else if self.paused {
                 None
@@ -199,14 +231,14 @@ impl App {
                 if self.read_input()? {
                     return Ok(());
                 }
-            } else if self.settings.still && timeout.is_some() {
-                self.draw(0.0)?;
+            } else if self.settings.mode == Mode::Still && timeout.is_some() {
+                self.draw_still()?;
             }
         }
     }
 
     fn resume(&mut self) -> io::Result<()> {
-        if self.settings.mouse {
+        if self.settings.mouse() {
             term::write_all(term::MOUSE_ON)?;
         }
         self.layout()
@@ -215,19 +247,19 @@ impl App {
     /// Reads what's waiting on stdin and acts on it; true means quit.
     fn read_input(&mut self) -> io::Result<bool> {
         let mut buf = [0u8; 4096];
-        let mut inputs = Vec::new();
+        self.inputs.clear();
         loop {
             match term::read_input(&mut buf) {
                 Ok(0) => return Ok(true),
                 Ok(n) => self.pending.extend_from_slice(&buf[..n]),
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => return Ok(false),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => break,
                 Err(e) => return Err(e),
             }
-            let used = input::parse(&self.pending, &mut inputs);
+            let used = input::parse(&self.pending, &mut self.inputs);
             self.pending.drain(..used);
             if self.pending == [0x1b] && !term::wait_input(Some(ESC_WAIT)) {
                 self.pending.clear();
-                inputs.push(Input::Esc);
+                self.inputs.push(Input::Esc);
             }
             if self.pending.len() > 64 {
                 self.pending.clear();
@@ -236,17 +268,18 @@ impl App {
                 break;
             }
         }
-        for input in &inputs {
-            if self.apply(input)? {
+        for i in 0..self.inputs.len() {
+            if self.apply(i)? {
                 return Ok(true);
             }
         }
         Ok(false)
     }
 
-    fn apply(&mut self, input: &Input) -> io::Result<bool> {
+    fn apply(&mut self, i: usize) -> io::Result<bool> {
+        let input = &self.inputs[i];
         if self.settings.screensaver {
-            return Ok(matches!(input, Input::Key(_) | Input::Esc));
+            return Ok(matches!(input, Input::Key(_) | Input::Esc | Input::Special));
         }
         match *input {
             Input::Key(b'q' | b'Q' | CTRL_C) | Input::Esc => return Ok(true),
@@ -255,8 +288,8 @@ impl App {
                 self.resume()?;
             }
             Input::Key(b'p' | b'P') => self.toggle_pause(),
-            Input::Key(b' ') => self.act(App::click),
-            Input::Key(b'f' | b'F') => self.act(App::feed),
+            Input::Key(b' ') => self.act(World::click),
+            Input::Key(b'f' | b'F') => self.act(World::feed),
             Input::Mouse {
                 button,
                 col,
@@ -294,18 +327,9 @@ impl App {
     }
 
     fn act_at(&mut self, action: fn(&mut World, f64, f64), x: f64, y: f64) {
-        if !self.paused && !self.settings.still {
+        if !self.paused && self.settings.mode == Mode::Live {
             action(&mut self.scene.world, x, y);
         }
-    }
-
-    fn click(world: &mut World, x: f64, y: f64) {
-        world.splash(x, y);
-        world.disturb(x, y);
-    }
-
-    fn feed(world: &mut World, x: f64, y: f64) {
-        world.feed(x, y);
     }
 
     fn mouse(&mut self, button: u32, col: u32, row: u32, press: bool) {
@@ -317,10 +341,76 @@ impl App {
         self.last_mouse = Instant::now();
         if press && button & (MOUSE_MOTION | MOUSE_WHEEL) == 0 {
             match button & MOUSE_BUTTONS {
-                0 => self.act_at(App::click, x, y),
-                2 => self.act_at(App::feed, x, y),
+                0 => self.act_at(World::click, x, y),
+                2 => self.act_at(World::feed, x, y),
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_sea_keeps_time_at_any_frame_rate_and_speed() {
+        for (fps, speed) in [
+            (30.0, 1.0),
+            (10.0, 1.0),
+            (5.0, 1.0),
+            (30.0, 3.0),
+            (30.0, 5.0),
+            (120.0, 0.5),
+        ] {
+            let (mut acc, mut steps) = (0.0, 0);
+            for _ in 0..(fps as usize * 10) {
+                steps += steps_for(&mut acc, speed / fps);
+            }
+            let rate = steps as f64 * STEP / 10.0;
+            assert!(
+                (rate - speed).abs() < 0.05 * speed,
+                "fps {fps} speed {speed}: {rate:.2}×"
+            );
+        }
+    }
+
+    #[test]
+    fn still_redraws_change_nothing_but_the_clock() {
+        use crate::clock::ClockStyle;
+        use crate::world::{SharkKind, SharkSpec};
+        math::seed(4);
+        let mut scene = Scene {
+            world: World::new(
+                vec![SharkSpec {
+                    kind: SharkKind::Tiger,
+                    size: 1.0,
+                }],
+                None,
+            ),
+            renderer: Renderer::new(),
+            overlay: Overlay::new(Some(ClockStyle::Lcd), false, None),
+            aspect: 2.1,
+        };
+        let (mut still, mut a, mut b) = (Grid::new(), Grid::new(), Grid::new());
+        still.resize(120, 40);
+        scene.resize(120, 40, scene.cell_size(120));
+        scene.render_still(&mut still);
+        for g in [&mut a, &mut b] {
+            g.clone_from(&still);
+            scene.overlay.draw(g);
+        }
+        assert!(a.glyph == b.glyph && a.fg == b.fg && a.bg == b.bg);
+    }
+
+    #[test]
+    fn a_stall_does_not_snowball() {
+        let mut acc = 5.0;
+        assert_eq!(
+            steps_for(&mut acc, 0.1),
+            6,
+            "a tenth of a second is six steps"
+        );
+        assert_eq!(acc, 0.0);
     }
 }

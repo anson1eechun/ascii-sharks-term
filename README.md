@@ -19,7 +19,7 @@ ASCII sharks hunting schools of fish in your terminal, in 24-bit colour. A small
 - **A clock** in seven ASCII-art styles, and room for a line of your own text.
 - **Rain**, a **calm** mode without shimmer, a **still** mode that uses no CPU between clock ticks, and **print** for shell greetings.
 - **Any terminal.** 24-bit, 256, 16 colours or none (`NO_COLOR` is honoured); ASCII-only glyphs if you need them; East Asian wide-glyph terminals are detected.
-- **Light on resources.** About 2 MB of memory, and 5–8% of one CPU core at 30 fps (3% at 10 fps).
+- **Light on resources.** About 2 MB of memory, and 5–10% of one CPU core at 30 fps (3–4% at 10 fps).
 
 ## Install
 
@@ -202,15 +202,15 @@ Measured on Apple Silicon with a 200×55 terminal, 4 sharks and 340 fish:
 
 | | CPU (one core) | Memory |
 |---|---|---|
-| `sharks -f 10` | 3.1% | 2.3 MB |
-| `sharks -f 20` | 6.2% | 2.3 MB |
-| `sharks` (30 fps) | 5–8% | 2.3 MB |
+| `sharks -f 10` | 3–4% | 2.3 MB |
+| `sharks -f 20` | 6–7% | 2.3 MB |
+| `sharks` (30 fps) | 5–10% | 2.3 MB |
 | `sharks --still --clock` | 0% between ticks | 2.3 MB |
-| `sharks -f 60` | 12.7% | 2.3 MB |
+| `sharks -f 60` | 13–15% | 2.4 MB |
 | for comparison: cmatrix | 4% | 2 MB |
 | for comparison: asciiquarium | 5% | 11 MB |
 
-Most of the cost is upstream's simulation (fish schooling) and its anti-aliased shark rendering (five samples per cell).
+Readings vary by a few points from run to run with the scene and the machine's load. Most of the cost is upstream's simulation (fish schooling) and its anti-aliased shark rendering (five samples per cell).
 
 ## Development
 

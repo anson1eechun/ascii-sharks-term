@@ -5,7 +5,8 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 
 use crate::clock::ClockStyle;
-use crate::term::{self, ColorMode};
+use crate::screen::ColorMode;
+use crate::term;
 use crate::world::SharkKind;
 
 const HELP_EN: &str = "sharks — ASCII sharks and fish schools in your terminal
@@ -110,13 +111,14 @@ pub fn fail(msg: &str) -> ! {
     exit(2);
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Live,
     Still,
     Print,
 }
 
+#[derive(Debug)]
 pub struct Options {
     pub kinds: Option<Vec<SharkKind>>,
     pub count: usize,
@@ -137,127 +139,218 @@ pub struct Options {
     pub list_styles: bool,
 }
 
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            kinds: None,
+            count: 4,
+            fish: None,
+            seed: None,
+            speed: 1.0,
+            rain: false,
+            calm: false,
+            clock: None,
+            seconds: false,
+            message: None,
+            fps: 30.0,
+            color: None,
+            ascii: false,
+            aspect: None,
+            screensaver: false,
+            mode: Mode::Live,
+            list_styles: false,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Stop {
+    Print(String),
+    Fail(String),
+}
+
 fn number<T: FromStr + PartialOrd + Display>(
     flag: &str,
     value: &str,
     range: RangeInclusive<T>,
-) -> T {
+) -> Result<T, Stop> {
     match value.parse() {
-        Ok(n) if range.contains(&n) => n,
-        _ if zh() => fail(&format!(
-            "{flag} 要介於 {} 到 {}",
+        Ok(n) if range.contains(&n) => Ok(n),
+        _ => Err(Stop::Fail(format!(
+            "{flag} {} {} {} {}",
+            t("must be between", "要介於"),
             range.start(),
+            t("and", "到"),
             range.end()
-        )),
-        _ => fail(&format!(
-            "{flag} must be between {} and {}",
-            range.start(),
-            range.end()
-        )),
+        ))),
     }
 }
 
 pub fn parse() -> Options {
-    let mut o = Options {
-        kinds: None,
-        count: 4,
-        fish: None,
-        seed: None,
-        speed: 1.0,
-        rain: false,
-        calm: false,
-        clock: None,
-        seconds: false,
-        message: None,
-        fps: 30.0,
-        color: None,
-        ascii: false,
-        aspect: None,
-        screensaver: false,
-        mode: Mode::Live,
-        list_styles: false,
-    };
-    let mut args = std::env::args().skip(1);
+    parse_from(std::env::args().skip(1)).unwrap_or_else(|stop| match stop {
+        Stop::Print(text) => {
+            println!("{text}");
+            exit(0);
+        }
+        Stop::Fail(msg) => fail(&msg),
+    })
+}
+
+pub fn parse_from(args: impl IntoIterator<Item = String>) -> Result<Options, Stop> {
+    let mut o = Options::default();
+    let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
         let (flag, mut inline) = match arg.split_once('=') {
             Some((f, v)) if f.starts_with("--") => (f.to_owned(), Some(v.to_owned())),
             _ => (arg, None),
         };
         if flag == "--clock" {
-            let style = inline.take().unwrap_or_else(|| "block".into());
-            o.clock = Some(ClockStyle::parse(&style).unwrap_or_else(|| {
-                fail(&format!(
+            let style = inline.or_else(|| args.next_if(|a| ClockStyle::parse(a).is_some()));
+            let style = style.as_deref().unwrap_or("block");
+            o.clock = Some(ClockStyle::parse(style).ok_or_else(|| {
+                Stop::Fail(format!(
                     "{}: {style} (see --styles)",
                     t("unknown clock style", "不認得的時鐘字型")
                 ))
-            }));
+            })?);
             continue;
         }
         let mut value = || {
             inline
                 .take()
                 .or_else(|| args.next())
-                .unwrap_or_else(|| fail(&format!("{flag} {}", t("needs a value", "需要一個值"))))
+                .ok_or_else(|| Stop::Fail(format!("{flag} {}", t("needs a value", "需要一個值"))))
         };
         match flag.as_str() {
-            "-h" | "--help" => {
-                println!("{}", t(HELP_EN, HELP_ZH));
-                exit(0);
+            "-h" | "--help" => return Err(Stop::Print(t(HELP_EN, HELP_ZH).into())),
+            "-V" | "--version" => {
+                return Err(Stop::Print(format!("sharks {}", env!("CARGO_PKG_VERSION"))));
             }
             "-l" | "--list" => {
-                for kind in SharkKind::ALL {
-                    println!("{:<12} {}", kind.name(), kind.label(zh()));
-                }
-                exit(0);
-            }
-            "-V" | "--version" => {
-                println!("sharks {}", env!("CARGO_PKG_VERSION"));
-                exit(0);
+                let list = SharkKind::ALL.map(|k| format!("{:<12} {}", k.name(), k.label(zh())));
+                return Err(Stop::Print(list.join("\n")));
             }
             "--styles" => o.list_styles = true,
-            "-k" | "--sharks" => o.kinds = Some(parse_kinds(&value())),
-            "-n" | "--count" => o.count = number(&flag, &value(), 1..=12),
-            "--fish" => o.fish = Some(number(&flag, &value(), 1..=1000)),
-            "--seed" => o.seed = Some(number(&flag, &value(), 0..=u32::MAX)),
-            "--speed" => o.speed = number(&flag, &value(), 0.1..=5.0),
+            "-k" | "--sharks" => o.kinds = Some(parse_kinds(&value()?)?),
+            "-n" | "--count" => o.count = number(&flag, &value()?, 1..=MAX_SHARKS)?,
+            "--fish" => o.fish = Some(number(&flag, &value()?, 1..=1000)?),
+            "--seed" => o.seed = Some(number(&flag, &value()?, 0..=u32::MAX)?),
+            "--speed" => o.speed = number(&flag, &value()?, 0.1..=5.0)?,
             "--rain" => o.rain = true,
             "--calm" => o.calm = true,
             "--seconds" => o.seconds = true,
-            "-m" | "--message" => o.message = Some(value()),
-            "-f" | "--fps" => o.fps = number(&flag, &value(), 1.0..=120.0),
+            "-m" | "--message" => {
+                o.message = Some(
+                    value()?
+                        .chars()
+                        .map(|c| if c.is_control() { ' ' } else { c })
+                        .collect(),
+                )
+            }
+            "-f" | "--fps" => o.fps = number(&flag, &value()?, 1.0..=120.0)?,
             "--color" => {
-                let v = value();
-                o.color = ColorMode::parse(&v).unwrap_or_else(|| {
-                    fail(&format!("--color: auto, truecolor, 256, 16, mono ({v}?)"))
-                });
+                let v = value()?;
+                o.color = match v.as_str() {
+                    "auto" => None,
+                    v => Some(ColorMode::parse(v).ok_or_else(|| {
+                        Stop::Fail(format!(
+                            "--color: auto, truecolor, 256, 16 {} mono ({v}?)",
+                            t("or", "或")
+                        ))
+                    })?),
+                };
             }
             "--ascii" => o.ascii = true,
-            "--aspect" => o.aspect = Some(number(&flag, &value(), term::ASPECT)),
+            "--aspect" => o.aspect = Some(number(&flag, &value()?, term::ASPECT)?),
             "-S" | "--screensaver" => o.screensaver = true,
             "--still" => o.mode = Mode::Still,
             "--print" => o.mode = Mode::Print,
-            _ if zh() => fail(&format!("不認得的選項：{flag}（用 -h 看說明）")),
-            _ => fail(&format!("unknown option: {flag} (see -h)")),
+            _ if zh() => return Err(Stop::Fail(format!("不認得的選項：{flag}（用 -h 看說明）"))),
+            _ => return Err(Stop::Fail(format!("unknown option: {flag} (see -h)"))),
         }
     }
-    o
+    Ok(o)
 }
 
-pub fn parse_kinds(list: &str) -> Vec<SharkKind> {
-    let (kinds, unknown): (Vec<_>, Vec<_>) = list
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|n| SharkKind::parse(n).ok_or(n))
-        .partition(Result::is_ok);
-    if !unknown.is_empty() {
-        let unknown: Vec<&str> = unknown.into_iter().filter_map(Result::err).collect();
-        let unknown = unknown.join(", ");
-        fail(&if zh() {
-            format!("不認得的鯊魚種類：{unknown}（用 -l 看清單）")
-        } else {
-            format!("unknown shark kind: {unknown} (see -l)")
-        });
+const MAX_SHARKS: usize = 12;
+
+pub fn parse_kinds(list: &str) -> Result<Vec<SharkKind>, Stop> {
+    let mut kinds = Vec::new();
+    let mut unknown = Vec::new();
+    for name in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        match SharkKind::parse(name) {
+            Some(kind) => kinds.push(kind),
+            None => unknown.push(name),
+        }
     }
-    kinds.into_iter().flatten().collect()
+    let unknown = unknown.join(", ");
+    match kinds.len() {
+        _ if !unknown.is_empty() && zh() => Err(Stop::Fail(format!(
+            "不認得的鯊魚種類：{unknown}（用 -l 看清單）"
+        ))),
+        _ if !unknown.is_empty() => Err(Stop::Fail(format!(
+            "unknown shark kind: {unknown} (see -l)"
+        ))),
+        1..=MAX_SHARKS => Ok(kinds),
+        _ => Err(Stop::Fail(format!(
+            "-k: 1–{MAX_SHARKS} {}",
+            t("sharks", "隻鯊魚")
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Options, Stop> {
+        parse_from(args.iter().map(|a| a.to_string()))
+    }
+
+    #[test]
+    fn clock_style_with_or_without_equals() {
+        assert_eq!(parse(&["--clock"]).unwrap().clock, Some(ClockStyle::Block));
+        assert_eq!(
+            parse(&["--clock=lcd"]).unwrap().clock,
+            Some(ClockStyle::Lcd)
+        );
+        let o = parse(&["--clock", "dots", "--rain"]).unwrap();
+        assert_eq!((o.clock, o.rain), (Some(ClockStyle::Dots), true));
+        assert!(
+            matches!(parse(&["--clock", "--rain"]), Ok(o) if o.clock == Some(ClockStyle::Block) && o.rain)
+        );
+        assert!(parse(&["--clock=nope"]).is_err());
+    }
+
+    #[test]
+    fn rejects_bad_values() {
+        for args in [
+            &["-k", ""][..],
+            &["-k", ","],
+            &["-k", "tiger,whale"],
+            &["-n", "13"],
+            &["--fps", "0"],
+            &["--color", "rgb"],
+            &["-f"],
+        ] {
+            assert!(matches!(parse(args), Err(Stop::Fail(_))), "{args:?}");
+        }
+        assert!(parse(&["-k", &["mako"; 12].join(",")]).is_ok());
+        assert!(parse(&["-k", &["mako"; 13].join(",")]).is_err());
+    }
+
+    #[test]
+    fn message_loses_control_characters() {
+        let o = parse(&["-m", "one\ntwo\x1b[31m"]).unwrap();
+        assert_eq!(o.message.as_deref(), Some("one two [31m"));
+    }
+
+    #[test]
+    fn colour_auto_and_modes() {
+        assert_eq!(parse(&["--color", "auto"]).unwrap().color, None);
+        assert_eq!(
+            parse(&["--color=256"]).unwrap().color,
+            Some(ColorMode::Ansi256)
+        );
+    }
 }

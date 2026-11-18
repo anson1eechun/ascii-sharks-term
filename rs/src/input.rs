@@ -9,6 +9,9 @@ pub enum Input {
         press: bool,
     },
     FocusLost,
+    /// Arrows, function keys, Alt chords.
+    Special,
+    /// Terminal replies and anything unrecognised.
     Other,
 }
 
@@ -36,8 +39,15 @@ pub fn parse(buf: &[u8], out: &mut Vec<Input>) -> usize {
                 out.push(csi(&buf[body..end], buf[end]));
                 i = end + 1;
             }
+            Some(b'O') => {
+                if i + 2 >= buf.len() {
+                    break;
+                }
+                out.push(Input::Special);
+                i += 3;
+            }
             Some(_) => {
-                out.push(Input::Other);
+                out.push(Input::Special);
                 i += 2;
             }
         }
@@ -49,6 +59,7 @@ fn csi(params: &[u8], fin: u8) -> Input {
     match (params, fin) {
         ([], b'O') => Input::FocusLost,
         ([b'<', rest @ ..], b'M' | b'm') => mouse(rest, fin == b'M').unwrap_or(Input::Other),
+        (_, b'A'..=b'H' | b'P' | b'Q' | b'S' | b'~') if !params.contains(&b'?') => Input::Special,
         _ => Input::Other,
     }
 }
@@ -109,6 +120,15 @@ mod tests {
         assert_eq!(all(b"\x1b"), (vec![], 0));
         assert_eq!(all(b"x\x1b[<0;12"), (vec![Input::Key(b'x')], 1));
         assert_eq!(all(b"\x1b[6;17;8t").0, [Input::Other]);
+    }
+
+    #[test]
+    fn keys_are_told_from_replies() {
+        let (inputs, _) = all(b"\x1b[A\x1bOP\x1b[15~\x1bx\x1b[6;17;8t\x1b[?62c");
+        use Input::*;
+        assert_eq!(inputs, [Special, Special, Special, Special, Other, Other]);
+        assert_eq!(all(b"\x1b[1;3R").0, [Other], "a cursor report is not F3");
+        assert_eq!(all(b"\x1bO"), (vec![], 0));
     }
 
     #[test]

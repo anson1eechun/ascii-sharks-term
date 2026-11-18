@@ -7,6 +7,7 @@ mod grid;
 mod input;
 mod math;
 mod renderer;
+mod screen;
 mod species;
 mod term;
 #[cfg(test)]
@@ -19,7 +20,7 @@ use app::{App, Scene, Settings};
 use cli::{Mode, Options, fail, t};
 use clock::{ClockStyle, Overlay};
 use renderer::{Labels, Renderer};
-use term::{ColorMode, Screen};
+use screen::{ColorMode, Screen};
 use world::{SharkKind, SharkSpec, World};
 
 const FALLBACK_ASPECT: f64 = 2.1;
@@ -90,7 +91,7 @@ fn main() {
         for style in ClockStyle::ALL {
             println!("{}", style.name());
             let sample = clock::sample(style.fallback(opts.ascii, false, color == ColorMode::Mono));
-            let _ = term::write_all(&term::print(&sample, color, opts.ascii));
+            let _ = term::write_all(&screen::print(&sample, color, opts.ascii));
             println!();
         }
         return;
@@ -131,8 +132,7 @@ fn main() {
         speed: opts.speed,
         rain: opts.rain,
         screensaver: opts.screensaver,
-        still: opts.mode == Mode::Still,
-        mouse: opts.mode == Mode::Live && !opts.screensaver,
+        mode: opts.mode,
     };
     let screen = Screen::new(color, opts.ascii || probe.wide_ambiguous);
     let result = App::new(

@@ -108,7 +108,7 @@ pub struct Shark {
 pub enum EventKind {
     Eat,
     Splash,
-    /// Not in upstream.
+    // Not in upstream.
     Disturb,
     Drop,
     Feed,
@@ -236,16 +236,17 @@ impl World {
             };
             self.fish.extend(std::iter::repeat_n(template, want - have));
         } else if want < have {
+            // Unseen dead fish go first, then the most recent arrivals.
             let mut extra = have - want;
-            for i in (0..self.fish.len()).rev() {
-                if extra == 0 {
-                    break;
-                }
-                if !self.fish[i].bait {
-                    self.fish.remove(i);
-                    extra -= 1;
-                }
-            }
+            let mut cull = |f: &Fish, alive: bool| {
+                let drop = extra > 0 && !f.bait && f.alive == alive;
+                extra -= drop as usize;
+                !drop
+            };
+            self.fish.retain(|f| cull(f, false));
+            self.fish.reverse();
+            self.fish.retain(|f| cull(f, true));
+            self.fish.reverse();
             for sh in &mut self.sharks {
                 sh.target = None;
             }
@@ -354,6 +355,7 @@ impl World {
             let k = (1.0 - d / r) * push;
             f.vx += (dx / d) * k;
             f.vy += (dy / d) * k;
+            // Alarm never exceeds 1, so a splash's max(1.0) is upstream's `= 1`.
             f.alarm = f.alarm.max(alarm);
         }
     }
@@ -411,6 +413,12 @@ impl World {
                 sh.retarget_at = self.time;
             }
         }
+    }
+
+    /// Not in upstream.
+    pub fn click(&mut self, x: f64, y: f64) {
+        self.splash(x, y);
+        self.disturb(x, y);
     }
 
     /// Not in upstream.
@@ -690,6 +698,7 @@ impl World {
             dx += (sh.heading + sh.wander).cos() * 0.45;
             dy += (sh.heading + sh.wander).sin() * 0.45;
 
+            // Not in upstream, like every `fleeing` branch below.
             let scare = self.flee_clicks(&sh, &mut dx, &mut dy);
             let fleeing = scare > SCARE_FLEE;
 
@@ -810,6 +819,7 @@ impl World {
                     }
                     if (f.x - mx) * (f.x - mx) + (f.y - my) * (f.y - my) < mouth_r * mouth_r {
                         f.alive = false;
+                        // Not in upstream: bait doesn't come back.
                         f.respawn_at = if f.bait {
                             f64::INFINITY
                         } else {

@@ -75,7 +75,7 @@ const CLICK: RippleStyle = RippleStyle {
     speed: 240.0,
     strength: 1.0,
 };
-const DROP: RippleStyle = RippleStyle {
+const SMALL: RippleStyle = RippleStyle {
     rings: 1,
     gap: 0.0,
     life: 0.9,
@@ -542,7 +542,7 @@ impl Renderer {
         grid: &mut Grid,
         surface: impl FnOnce(&mut Grid),
     ) {
-        if self.cols == 0 {
+        if self.cols == 0 || self.rows == 0 {
             return;
         }
         let t = world.time;
@@ -575,19 +575,20 @@ impl Renderer {
         if self.shark_flag[i] == 0 {
             return;
         }
-        let text = format!(
-            " {} ",
-            self.shark_kind[i].label(self.labels == Labels::Chinese)
-        );
+        let name = self.shark_kind[i].label(self.labels == Labels::Chinese);
         let (row, col) = (i / self.cols, i % self.cols);
         let row = if row >= 2 { row - 2 } else { row + 2 };
-        let col = (col + 2).min(self.cols.saturating_sub(str_width(&text)));
-        grid.put(row, col, &text, LABEL_FG, Some(LABEL_BG));
+        let col = (col + 2).min(self.cols.saturating_sub(str_width(name) + 2));
+        for (dx, part) in [(0, " "), (1, name), (1 + str_width(name), " ")] {
+            grid.put(row, col + dx, part, LABEL_FG, Some(LABEL_BG));
+        }
     }
 
     /// Not in upstream.
     fn draw_ripples(&self, t: f64, grid: &mut Grid) {
         let (cw, ch, cols, rows) = (self.cw, self.ch, self.cols as i64, self.rows as i64);
+        // The cell test below never accepts a cell further than `band` off the ring.
+        let band = 0.5 * cw.max(ch);
         for rp in &self.ripples {
             let style = rp.style;
             for k in (0..style.rings).rev() {
@@ -598,8 +599,6 @@ impl Renderer {
                 let r = cw + age * style.speed;
                 let fade = 1.0 - age / style.life;
                 let alpha = fade * fade.sqrt() * (1.0 - 0.25 * k as f64) * style.strength;
-                // The cell test below never accepts a cell further than `band` off the ring.
-                let band = 0.5 * cw.max(ch);
                 let (outer, inner) = (r + band, (r - band).max(0.0));
                 let r0 = (((rp.y - outer) / ch).floor() as i64 - 1).max(0);
                 let r1 = (((rp.y + outer) / ch).floor() as i64 + 1).min(rows - 1);
@@ -624,6 +623,10 @@ impl Renderer {
                         let c0 = (((rp.x + lo) / cw - 0.5).floor() as i64).max(0);
                         let c1 = (((rp.x + hi) / cw - 0.5).ceil() as i64).min(cols - 1);
                         for col in c0..=c1 {
+                            let i = row as usize * self.cols + col as usize;
+                            if grid.is_wide(i) {
+                                continue;
+                            }
                             let ox = (col as f64 + 0.5) * cw - rp.x;
                             let d = ox.hypot(oy);
                             if d == 0.0 {
@@ -642,12 +645,7 @@ impl Renderer {
                             } else {
                                 '\\'
                             };
-                            grid.text(
-                                row as usize * self.cols + col as usize,
-                                glyph,
-                                RIPPLE_RGB,
-                                alpha,
-                            );
+                            grid.text(i, glyph, RIPPLE_RGB, alpha);
                         }
                     }
                 }
@@ -658,7 +656,8 @@ impl Renderer {
     fn cell_index(&self, x: f64, y: f64) -> Option<usize> {
         let c = (x / self.cw).floor();
         let r = (y / self.ch).floor();
-        if c < 0.0 || r < 0.0 || c >= self.cols as f64 || r >= self.rows as f64 {
+        // Written to reject NaN too; finite inputs fare exactly as upstream's test.
+        if !(c >= 0.0 && r >= 0.0 && c < self.cols as f64 && r < self.rows as f64) {
             return None;
         }
         Some(r as usize * self.cols + c as usize)
@@ -685,11 +684,11 @@ impl Renderer {
                 EventKind::Disturb => self.start_ripple(e.x, e.y, world.time, &CLICK),
                 EventKind::Drop => {
                     stamp(&mut self.energy, cells, e.x, e.y, 2, 0.7);
-                    self.start_ripple(e.x, e.y, world.time, &DROP);
+                    self.start_ripple(e.x, e.y, world.time, &SMALL);
                 }
                 EventKind::Feed => {
                     stamp(&mut self.energy, cells, e.x, e.y, 3, 1.0);
-                    self.start_ripple(e.x, e.y, world.time, &DROP);
+                    self.start_ripple(e.x, e.y, world.time, &SMALL);
                 }
             }
         }
@@ -1005,6 +1004,7 @@ impl Renderer {
         let (cw, ch, cols, rows) = (self.cw, self.ch, self.cols, self.rows);
         let n_nodes = SHARK_NODES;
         self.shark_flag.fill(0);
+        // Not in upstream: calm mode.
         let flicker_tick = if self.calm {
             0
         } else {
@@ -1129,6 +1129,8 @@ impl Renderer {
     }
 
     fn draw_sharks(&self, t: f64, grid: &mut Grid) {
+        // Not in upstream: calm mode holds the shimmer.
+        let shimmer_t = if self.calm { 0.0 } else { t };
         for i in 0..self.cols * self.rows {
             let flag = self.shark_flag[i];
             if flag == 0 {
@@ -1139,8 +1141,7 @@ impl Renderer {
             let dim = 0.7 + 0.3 * self.shark_depth[i] as f64;
             let [tr, tg, tb] = shape(self.shark_kind[i]).tint;
 
-            let clock = if self.calm { 0.0 } else { t };
-            let tick = (clock * 2.4 + (key % 997) as f64 / 97.0).floor();
+            let tick = (shimmer_t * 2.4 + (key % 997) as f64 / 97.0).floor();
             let roll = hash3(key as i32, to_i32(tick), 7);
             let pick = |set: &[u8]| set[((key >> 8) as usize) % set.len()] as char;
 

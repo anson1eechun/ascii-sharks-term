@@ -210,136 +210,149 @@ fn scaled(px: &[Vec<bool>], s: usize) -> Vec<Vec<bool>> {
         .collect()
 }
 
-/// Lays out `text` in `style`, as large as fits in `cols` × `rows`.
+/// Within upstream's headline zone, which the sharks keep out of.
+fn fits(w: usize, h: usize, cols: usize, rows: usize) -> bool {
+    w * 10 <= cols * 6 && h * 100 <= rows * 32
+}
+
+fn largest(
+    scales: &[usize],
+    cols: usize,
+    rows: usize,
+    size: impl Fn(usize) -> (usize, usize),
+) -> usize {
+    scales
+        .iter()
+        .copied()
+        .take_while(|&s| {
+            let (w, h) = size(s);
+            fits(w, h, cols, rows)
+        })
+        .last()
+        .unwrap_or(1)
+}
+
 fn render(style: ClockStyle, text: &str, cols: usize, rows: usize) -> Art {
-    // Within upstream's headline zone, which the sharks keep out of.
-    let fits = |w: usize, h: usize| w * 10 <= cols * 6 && h * 100 <= rows * 32;
-    let largest = |scales: &[usize], size: &dyn Fn(usize) -> (usize, usize)| {
-        scales
-            .iter()
-            .copied()
-            .take_while(|&s| fits(size(s).0, size(s).1))
-            .last()
-            .unwrap_or(1)
-    };
     match style {
         ClockStyle::Block | ClockStyle::Shadow | ClockStyle::Hash => {
-            let px = pixels(text, &SMALL);
-            let s = largest(&[2, 3, 4, 5, 6], &|s| (px[0].len() * 2 * s, 5 * s));
-            let shadow = (style == ClockStyle::Shadow) as usize;
-            let mut art = Art::new(px[0].len() * 2 * s + 2 * shadow, 5 * s + shadow);
-            let ink = if style == ClockStyle::Hash {
-                Ink::Glyph('#')
-            } else {
-                Ink::Fill(INK)
-            };
-            for pass in 0..=shadow {
-                let (ink, dx, dy) = if pass < shadow {
-                    (Ink::Fill(SHADE), 2, 1)
-                } else {
-                    (ink, 0, 0)
-                };
-                for (y, row) in px.iter().enumerate() {
-                    for x in row.iter().enumerate().filter(|&(_, &p)| p).map(|(x, _)| x) {
-                        art.fill(x * 2 * s + dx, y * s + dy, 2 * s, s, ink);
-                    }
-                }
+            blocks(style, text, cols, rows)
+        }
+        ClockStyle::Half => half_blocks(text, cols, rows),
+        ClockStyle::Dots => braille(text, cols, rows),
+        ClockStyle::Big => lines(text, |c| BIG[index(c)].map(String::from)),
+        ClockStyle::Lcd => lines(text, lcd_glyph),
+    }
+}
+
+/// Square pixels two cells wide: solid, shadowed, or drawn with `#`.
+fn blocks(style: ClockStyle, text: &str, cols: usize, rows: usize) -> Art {
+    let px = pixels(text, &SMALL);
+    let s = largest(&[2, 3, 4, 5, 6], cols, rows, |s| {
+        (px[0].len() * 2 * s, 5 * s)
+    });
+    let shadow = (style == ClockStyle::Shadow) as usize;
+    let mut art = Art::new(px[0].len() * 2 * s + 2 * shadow, 5 * s + shadow);
+    let ink = if style == ClockStyle::Hash {
+        Ink::Glyph('#')
+    } else {
+        Ink::Fill(INK)
+    };
+    let passes = [(Ink::Fill(SHADE), 2, 1), (ink, 0, 0)];
+    for &(ink, dx, dy) in &passes[1 - shadow..] {
+        for (y, row) in px.iter().enumerate() {
+            for (x, _) in row.iter().enumerate().filter(|&(_, &p)| p) {
+                art.fill(x * 2 * s + dx, y * s + dy, 2 * s, s, ink);
             }
-            art
-        }
-        ClockStyle::Half => {
-            let base = pixels(text, &LARGE);
-            // Odd scales only: even ones fill both halves of every cell alike.
-            let s = largest(&[3, 5], &|s| (base[0].len() * s, (7 * s).div_ceil(2)));
-            let px = scaled(&base, s);
-            let mut art = Art::new(px[0].len(), px.len().div_ceil(2));
-            for (y, pair) in px.chunks(2).enumerate() {
-                for x in 0..art.w {
-                    let (top, bottom) = (pair[0][x], pair.get(1).is_some_and(|r| r[x]));
-                    let glyph = match (top, bottom) {
-                        (true, true) => '█',
-                        (true, false) => '▀',
-                        (false, true) => '▄',
-                        (false, false) => continue,
-                    };
-                    art.cells[y * art.w + x] = Some(Ink::Glyph(glyph));
-                }
-            }
-            art
-        }
-        ClockStyle::Dots => {
-            let base = pixels(text, &LARGE);
-            let s = largest(&[2, 3, 4, 5, 6], &|s| {
-                ((base[0].len() * s).div_ceil(2), (7 * s).div_ceil(4))
-            });
-            let px = scaled(&base, s);
-            let at =
-                |x: usize, y: usize| px.get(y).and_then(|r| r.get(x)).copied().unwrap_or(false);
-            let mut art = Art::new(px[0].len().div_ceil(2), px.len().div_ceil(4));
-            const BITS: [(usize, usize, u32); 8] = [
-                (0, 0, 0x01),
-                (0, 1, 0x02),
-                (0, 2, 0x04),
-                (1, 0, 0x08),
-                (1, 1, 0x10),
-                (1, 2, 0x20),
-                (0, 3, 0x40),
-                (1, 3, 0x80),
-            ];
-            for y in 0..art.h {
-                for x in 0..art.w {
-                    let bits: u32 = BITS
-                        .iter()
-                        .filter(|&&(dx, dy, _)| at(2 * x + dx, 4 * y + dy))
-                        .map(|b| b.2)
-                        .sum();
-                    if bits != 0 {
-                        art.cells[y * art.w + x] = char::from_u32(0x2800 + bits).map(Ink::Glyph);
-                    }
-                }
-            }
-            art
-        }
-        ClockStyle::Big => {
-            let rows: Vec<String> = (0..5)
-                .map(|y| {
-                    text.chars()
-                        .map(|c| BIG[index(c)][y])
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .collect();
-            Art::from_rows(&rows)
-        }
-        ClockStyle::Lcd => {
-            let glyph = |c: char| -> [String; 5] {
-                let Some(d) = c.to_digit(10) else {
-                    return ["   ", "   ", " o ", "   ", " o "].map(String::from);
-                };
-                let on = |bit: u8| SEGMENTS[d as usize] & (1 << bit) != 0;
-                let bar = |bit| if on(bit) { "____" } else { "    " };
-                let side = |bit| if on(bit) { "|" } else { " " };
-                [
-                    format!(" {} ", bar(0)),
-                    format!("{}    {}", side(5), side(1)),
-                    format!("{}{}{}", side(5), bar(6), side(1)),
-                    format!("{}    {}", side(4), side(2)),
-                    format!("{}{}{}", side(4), bar(3), side(2)),
-                ]
-            };
-            let glyphs: Vec<[String; 5]> = text.chars().map(glyph).collect();
-            let rows: Vec<String> = (0..5)
-                .map(|y| {
-                    glyphs
-                        .iter()
-                        .map(|g| g[y].as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .collect();
-            Art::from_rows(&rows)
         }
     }
+    art
+}
+
+/// Two pixels per cell, one above the other.
+fn half_blocks(text: &str, cols: usize, rows: usize) -> Art {
+    let base = pixels(text, &LARGE);
+    // Odd scales only: even ones fill both halves of every cell alike.
+    let s = largest(&[3, 5], cols, rows, |s| {
+        (base[0].len() * s, (7 * s).div_ceil(2))
+    });
+    let px = scaled(&base, s);
+    let mut art = Art::new(px[0].len(), px.len().div_ceil(2));
+    for (y, pair) in px.chunks(2).enumerate() {
+        for x in 0..art.w {
+            let glyph = match (pair[0][x], pair.get(1).is_some_and(|r| r[x])) {
+                (true, true) => '█',
+                (true, false) => '▀',
+                (false, true) => '▄',
+                (false, false) => continue,
+            };
+            art.cells[y * art.w + x] = Some(Ink::Glyph(glyph));
+        }
+    }
+    art
+}
+
+/// Braille patterns: two by four pixels per cell.
+fn braille(text: &str, cols: usize, rows: usize) -> Art {
+    const DOTS: [(usize, usize, u32); 8] = [
+        (0, 0, 0x01),
+        (0, 1, 0x02),
+        (0, 2, 0x04),
+        (1, 0, 0x08),
+        (1, 1, 0x10),
+        (1, 2, 0x20),
+        (0, 3, 0x40),
+        (1, 3, 0x80),
+    ];
+    let base = pixels(text, &LARGE);
+    let s = largest(&[2, 3, 4, 5, 6], cols, rows, |s| {
+        ((base[0].len() * s).div_ceil(2), (7 * s).div_ceil(4))
+    });
+    let px = scaled(&base, s);
+    let at = |x: usize, y: usize| px.get(y).and_then(|r| r.get(x)).copied().unwrap_or(false);
+    let mut art = Art::new(px[0].len().div_ceil(2), px.len().div_ceil(4));
+    for y in 0..art.h {
+        for x in 0..art.w {
+            let bits: u32 = DOTS
+                .iter()
+                .filter(|&&(dx, dy, _)| at(2 * x + dx, 4 * y + dy))
+                .map(|d| d.2)
+                .sum();
+            if bits != 0 {
+                art.cells[y * art.w + x] = char::from_u32(0x2800 + bits).map(Ink::Glyph);
+            }
+        }
+    }
+    art
+}
+
+fn lines(text: &str, glyph: impl Fn(char) -> [String; 5]) -> Art {
+    let glyphs: Vec<[String; 5]> = text.chars().map(glyph).collect();
+    let rows: Vec<String> = (0..5)
+        .map(|y| {
+            glyphs
+                .iter()
+                .map(|g| g[y].as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    Art::from_rows(&rows)
+}
+
+fn lcd_glyph(c: char) -> [String; 5] {
+    let Some(d) = c.to_digit(10) else {
+        return ["   ", "   ", " o ", "   ", " o "].map(String::from);
+    };
+    let on = |bit: u8| SEGMENTS[d as usize] & (1 << bit) != 0;
+    let bar = |bit| if on(bit) { "____" } else { "    " };
+    let side = |bit| if on(bit) { "|" } else { " " };
+    [
+        format!(" {} ", bar(0)),
+        format!("{}    {}", side(5), side(1)),
+        format!("{}{}{}", side(5), bar(6), side(1)),
+        format!("{}    {}", side(4), side(2)),
+        format!("{}{}{}", side(4), bar(3), side(2)),
+    ]
 }
 
 fn now() -> Duration {
@@ -348,7 +361,6 @@ fn now() -> Duration {
         .unwrap_or_default()
 }
 
-/// Local hours, minutes and seconds.
 fn local_time() -> (u32, u32, u32) {
     unsafe {
         let t = libc::time(std::ptr::null_mut());
@@ -358,11 +370,18 @@ fn local_time() -> (u32, u32, u32) {
     }
 }
 
+struct Cached {
+    time: (u32, u32, u32),
+    cols: usize,
+    rows: usize,
+    art: Art,
+}
+
 pub struct Overlay {
-    pub clock: Option<ClockStyle>,
-    pub seconds: bool,
-    pub message: Option<String>,
-    cache: Option<(String, usize, usize, Art)>,
+    clock: Option<ClockStyle>,
+    seconds: bool,
+    message: Option<String>,
+    cache: Option<Cached>,
 }
 
 impl Overlay {
@@ -375,38 +394,40 @@ impl Overlay {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.clock.is_none() && self.message.is_none()
-    }
-
-    fn time_text(&self) -> String {
-        let (h, m, s) = local_time();
-        if self.seconds {
-            format!("{h:02}:{m:02}:{s:02}")
-        } else {
-            format!("{h:02}:{m:02}")
-        }
-    }
-
-    /// How long until the clock shows something else.
     pub fn until_change(&self) -> Option<Duration> {
         self.clock?;
         let t = now();
         let period = if self.seconds { 1 } else { 60 };
-        let into = Duration::new(t.as_secs() % period, t.subsec_nanos());
-        Some(Duration::from_secs(period) - into)
+        Some(Duration::from_secs(period) - Duration::new(t.as_secs() % period, t.subsec_nanos()))
+    }
+
+    /// Lays the time out again only when it, or the grid's size, changed.
+    fn refresh(&mut self, style: ClockStyle, cols: usize, rows: usize) {
+        let (h, m, s) = local_time();
+        let time = (h, m, if self.seconds { s } else { 0 });
+        if matches!(&self.cache, Some(c) if c.time == time && c.cols == cols && c.rows == rows) {
+            return;
+        }
+        let text = if self.seconds {
+            format!("{h:02}:{m:02}:{s:02}")
+        } else {
+            format!("{h:02}:{m:02}")
+        };
+        self.cache = Some(Cached {
+            time,
+            cols,
+            rows,
+            art: render(style, &text, cols, rows),
+        });
     }
 
     pub fn draw(&mut self, grid: &mut Grid) {
         if let Some(style) = self.clock {
-            let text = self.time_text();
-            let fresh = matches!(&self.cache, Some((t, c, r, _)) if *t == text && *c == grid.cols && *r == grid.rows);
-            if !fresh {
-                let art = render(style, &text, grid.cols, grid.rows);
-                self.cache = Some((text, grid.cols, grid.rows, art));
-            }
+            self.refresh(style, grid.cols, grid.rows);
+        } else if self.message.is_none() {
+            return;
         }
-        let art = self.clock.and(self.cache.as_ref()).map(|(.., art)| art);
+        let art = self.cache.as_ref().map(|c| &c.art);
         let art_h = art.map_or(0, |a| a.h);
         let msg_w = self.message.as_deref().map(str_width);
         let height = art_h + msg_w.map_or(0, |_| if art_h > 0 { 2 } else { 1 });
@@ -470,6 +491,23 @@ mod tests {
             "     |  ____|  o   ____| |____|"
         );
         assert_eq!(picture(ClockStyle::Big)[0], " _   ____        _____   _  _");
+    }
+
+    #[test]
+    fn message_sits_under_the_clock() {
+        let mut g = Grid::new();
+        g.resize(80, 30);
+        Overlay::new(None, false, None).draw(&mut g);
+        assert!(
+            g.glyph.iter().all(|&c| c == ' '),
+            "an empty overlay draws nothing"
+        );
+        Overlay::new(Some(ClockStyle::Big), false, Some("hi".into())).draw(&mut g);
+        let rows: Vec<String> = (0..30)
+            .map(|r| g.glyph[r * 80..(r + 1) * 80].iter().collect())
+            .collect();
+        let art = rows.iter().rposition(|r| r.contains('|')).unwrap();
+        assert_eq!(rows[art + 2].trim(), "hi");
     }
 
     #[test]
