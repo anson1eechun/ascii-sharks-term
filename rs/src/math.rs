@@ -18,7 +18,6 @@ fn clock_seed() -> u32 {
     (t ^ (t >> 32) ^ ((std::process::id() as u64) << 16)) as u32
 }
 
-#[cfg(test)]
 pub fn seed(s: u32) {
     RNG.with(|r| r.set(s));
 }

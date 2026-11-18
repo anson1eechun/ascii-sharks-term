@@ -1,69 +1,9 @@
 //! Port of upstream src/renderer.ts; canvas calls become writes into a Grid of cells.
 //! Left out: the grid lines, and the ambient dots and shadows upstream switches off.
 
+use crate::grid::{Grid, rgb, str_width};
 use crate::math::{PI, clamp, hash3, js_round, smoothstep, to_i32};
 use crate::world::{EventKind, SHARK_NODES, Shark, SharkKind, World};
-
-pub const DEFAULT_BG: u32 = u32::MAX;
-
-pub struct Grid {
-    pub cols: usize,
-    pub glyph: Vec<char>,
-    pub fg: Vec<u32>,
-    pub bg: Vec<u32>,
-}
-
-impl Grid {
-    pub fn new() -> Self {
-        Grid {
-            cols: 0,
-            glyph: Vec::new(),
-            fg: Vec::new(),
-            bg: Vec::new(),
-        }
-    }
-
-    pub fn resize(&mut self, cols: usize, rows: usize) {
-        self.cols = cols;
-        self.glyph = vec![' '; cols * rows];
-        self.fg = vec![0; cols * rows];
-        self.bg = vec![DEFAULT_BG; cols * rows];
-    }
-
-    fn clear(&mut self) {
-        self.glyph.fill(' ');
-        self.fg.fill(0);
-        self.bg.fill(DEFAULT_BG);
-    }
-
-    fn text(&mut self, i: usize, glyph: char, rgb: u32, alpha: f64) {
-        self.fg[i] = over(rgb, alpha, self.bg[i]);
-        self.glyph[i] = glyph;
-    }
-
-    fn block(&mut self, i: usize, rgb: u32) {
-        self.bg[i] = rgb;
-        self.glyph[i] = ' ';
-    }
-}
-
-/// Source-over onto an opaque colour; the default background counts as black.
-fn over(rgb: u32, alpha: f64, under: u32) -> u32 {
-    if alpha >= 1.0 {
-        return rgb;
-    }
-    let u = if under == DEFAULT_BG { 0 } else { under };
-    let mix = |shift: u32| {
-        js_round(
-            ((rgb >> shift) & 255) as f64 * alpha + ((u >> shift) & 255) as f64 * (1.0 - alpha),
-        ) as u32
-    };
-    (mix(16) << 16) | (mix(8) << 8) | mix(0)
-}
-
-const fn rgb(r: u32, g: u32, b: u32) -> u32 {
-    (r << 16) | (g << 8) | b
-}
 
 fn rgb_f(r: f64, g: f64, b: f64) -> u32 {
     let c = |v: f64| js_round(v).min(255.0) as u32;
@@ -114,17 +54,51 @@ const BOUND_EPS: f64 = 1e-6;
 const MAX_HALF_WIDTH: f64 = 0.12;
 
 // Not in upstream.
-const RIPPLE_RINGS: usize = 3;
-const RIPPLE_GAP: f64 = 0.22;
-const RIPPLE_LIFE: f64 = 1.6;
-const RIPPLE_SPEED: f64 = 240.0;
+struct RippleStyle {
+    rings: usize,
+    gap: f64,
+    life: f64,
+    speed: f64,
+    strength: f64,
+}
+
+impl RippleStyle {
+    const fn span(&self) -> f64 {
+        (self.rings - 1) as f64 * self.gap + self.life
+    }
+}
+
+const CLICK: RippleStyle = RippleStyle {
+    rings: 3,
+    gap: 0.22,
+    life: 1.6,
+    speed: 240.0,
+    strength: 1.0,
+};
+const DROP: RippleStyle = RippleStyle {
+    rings: 1,
+    gap: 0.0,
+    life: 0.9,
+    speed: 120.0,
+    strength: 0.6,
+};
 const RIPPLE_RGB: u32 = rgb(170, 235, 255);
-const RIPPLE_SPAN: f64 = (RIPPLE_RINGS - 1) as f64 * RIPPLE_GAP + RIPPLE_LIFE;
+const LABEL_FG: u32 = rgb(235, 240, 250);
+const LABEL_BG: u32 = rgb(25, 32, 44);
 
 struct Ripple {
     x: f64,
     y: f64,
     born: f64,
+    style: &'static RippleStyle,
+}
+
+/// Not in upstream: names the shark under the pointer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Labels {
+    Off,
+    English,
+    Chinese,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -476,6 +450,9 @@ pub struct Renderer {
     frame_id: u32,
     fish_buckets: [Vec<usize>; 5],
     ripples: Vec<Ripple>,
+    /// Not in upstream: holds the shimmer and flicker still.
+    pub calm: bool,
+    pub labels: Labels,
 }
 
 impl Renderer {
@@ -513,15 +490,21 @@ impl Renderer {
             frame_id: 0,
             fish_buckets: Default::default(),
             ripples: Vec::new(),
+            calm: false,
+            labels: Labels::Off,
         }
     }
 
-    /// Not in upstream.
+    #[cfg(test)]
     pub fn ripple(&mut self, x: f64, y: f64, t: f64) {
+        self.start_ripple(x, y, t, &CLICK);
+    }
+
+    fn start_ripple(&mut self, x: f64, y: f64, born: f64, style: &'static RippleStyle) {
         if self.ripples.len() >= 16 {
             self.ripples.remove(0);
         }
-        self.ripples.push(Ripple { x, y, born: t });
+        self.ripples.push(Ripple { x, y, born, style });
     }
 
     /// Upstream derives cw/ch from the canvas size; here the caller picks them to
@@ -546,12 +529,24 @@ impl Renderer {
         self.fish_stamp = vec![0; n];
     }
 
+    #[cfg(test)]
     pub fn render(&mut self, world: &mut World, dt: f64, grid: &mut Grid) {
+        self.render_with(world, dt, grid, |_| {});
+    }
+
+    /// `surface` draws above the sharks, under the ripples and the label.
+    pub fn render_with(
+        &mut self,
+        world: &mut World,
+        dt: f64,
+        grid: &mut Grid,
+        surface: impl FnOnce(&mut Grid),
+    ) {
         if self.cols == 0 {
             return;
         }
         let t = world.time;
-        self.ripples.retain(|r| t - r.born < RIPPLE_SPAN);
+        self.ripples.retain(|r| t - r.born < r.style.span());
 
         self.consume_events(world);
         self.rasterize_sharks(&world.sharks, t);
@@ -563,22 +558,46 @@ impl Renderer {
         self.draw_dots(grid);
         self.draw_heat(grid);
         self.draw_fish(grid);
-        self.draw_ripples(t, grid);
         self.draw_sharks(t, grid);
+        surface(grid);
+        self.draw_ripples(t, grid);
+        self.draw_label(world, grid);
+    }
+
+    /// Not in upstream.
+    fn draw_label(&self, world: &World, grid: &mut Grid) {
+        if self.labels == Labels::Off || !world.pointer.active {
+            return;
+        }
+        let Some(i) = self.cell_index(world.pointer.x, world.pointer.y) else {
+            return;
+        };
+        if self.shark_flag[i] == 0 {
+            return;
+        }
+        let text = format!(
+            " {} ",
+            self.shark_kind[i].label(self.labels == Labels::Chinese)
+        );
+        let (row, col) = (i / self.cols, i % self.cols);
+        let row = if row >= 2 { row - 2 } else { row + 2 };
+        let col = (col + 2).min(self.cols.saturating_sub(str_width(&text)));
+        grid.put(row, col, &text, LABEL_FG, Some(LABEL_BG));
     }
 
     /// Not in upstream.
     fn draw_ripples(&self, t: f64, grid: &mut Grid) {
         let (cw, ch, cols, rows) = (self.cw, self.ch, self.cols as i64, self.rows as i64);
         for rp in &self.ripples {
-            for k in (0..RIPPLE_RINGS).rev() {
-                let age = t - rp.born - k as f64 * RIPPLE_GAP;
-                if !(0.0..RIPPLE_LIFE).contains(&age) {
+            let style = rp.style;
+            for k in (0..style.rings).rev() {
+                let age = t - rp.born - k as f64 * style.gap;
+                if !(0.0..style.life).contains(&age) {
                     continue;
                 }
-                let r = cw + age * RIPPLE_SPEED;
-                let fade = 1.0 - age / RIPPLE_LIFE;
-                let alpha = fade * fade.sqrt() * (1.0 - 0.25 * k as f64);
+                let r = cw + age * style.speed;
+                let fade = 1.0 - age / style.life;
+                let alpha = fade * fade.sqrt() * (1.0 - 0.25 * k as f64) * style.strength;
                 // The cell test below never accepts a cell further than `band` off the ring.
                 let band = 0.5 * cw.max(ch);
                 let (outer, inner) = (r + band, (r - band).max(0.0));
@@ -663,7 +682,15 @@ impl Renderer {
                     stamp(&mut self.energy, cells, e.x, e.y, 3, 0.9);
                 }
                 EventKind::Splash => stamp(&mut self.energy, cells, e.x, e.y, 6, 1.4),
-                EventKind::Disturb => self.ripple(e.x, e.y, world.time),
+                EventKind::Disturb => self.start_ripple(e.x, e.y, world.time, &CLICK),
+                EventKind::Drop => {
+                    stamp(&mut self.energy, cells, e.x, e.y, 2, 0.7);
+                    self.start_ripple(e.x, e.y, world.time, &DROP);
+                }
+                EventKind::Feed => {
+                    stamp(&mut self.energy, cells, e.x, e.y, 3, 1.0);
+                    self.start_ripple(e.x, e.y, world.time, &DROP);
+                }
             }
         }
     }
@@ -978,7 +1005,11 @@ impl Renderer {
         let (cw, ch, cols, rows) = (self.cw, self.ch, self.cols, self.rows);
         let n_nodes = SHARK_NODES;
         self.shark_flag.fill(0);
-        let flicker_tick = to_i32((t * 6.0).floor());
+        let flicker_tick = if self.calm {
+            0
+        } else {
+            to_i32((t * 6.0).floor())
+        };
 
         for sh in sharks {
             let l = sh.length;
@@ -1108,7 +1139,8 @@ impl Renderer {
             let dim = 0.7 + 0.3 * self.shark_depth[i] as f64;
             let [tr, tg, tb] = shape(self.shark_kind[i]).tint;
 
-            let tick = (t * 2.4 + (key % 997) as f64 / 97.0).floor();
+            let clock = if self.calm { 0.0 } else { t };
+            let tick = (clock * 2.4 + (key % 997) as f64 / 97.0).floor();
             let roll = hash3(key as i32, to_i32(tick), 7);
             let pick = |set: &[u8]| set[((key >> 8) as usize) % set.len()] as char;
 

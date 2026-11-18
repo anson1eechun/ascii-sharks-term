@@ -1,7 +1,9 @@
 use std::fmt::Write;
 
 use super::*;
-use crate::renderer::DEFAULT_BG;
+use crate::app::STEP;
+use crate::cli::parse_kinds;
+use crate::grid::{DEFAULT_BG, Grid};
 
 /// Upstream demo.ts sizing: the first shark is biggest, the rest step down.
 fn demo_sizes(kinds: &[SharkKind]) -> Vec<SharkSpec> {
@@ -30,7 +32,7 @@ fn dump_frame() {
     let (cols, rows, cw, ch) = (150, 42, 13.0, 27.0);
     math::seed(42);
     let kinds = ["hammerhead", "tiger", "zebra", "greathammer", "thresher"];
-    let mut world = World::new(demo_sizes(&parse_kinds(&kinds.join(","))));
+    let mut world = World::new(demo_sizes(&parse_kinds(&kinds.join(","))), None);
     let mut renderer = Renderer::new();
     let mut grid = Grid::new();
     renderer.resize(cols, rows, cw, ch);
@@ -43,6 +45,13 @@ fn dump_frame() {
     for i in 0..steps {
         if i == 100 {
             world.splash(900.0, 500.0);
+        }
+        if i == 30 {
+            world.pointer = world::Pointer {
+                x: 700.0,
+                y: 400.0,
+                active: true,
+            };
         }
         if force && i == 50 {
             for (k, sh) in world.sharks.iter_mut().enumerate() {
@@ -99,10 +108,13 @@ fn dump_frame() {
 
 fn scene() -> World {
     math::seed(7);
-    let mut world = World::new(vec![SharkSpec {
-        kind: SharkKind::Classic,
-        size: 1.0,
-    }]);
+    let mut world = World::new(
+        vec![SharkSpec {
+            kind: SharkKind::Classic,
+            size: 1.0,
+        }],
+        None,
+    );
     world.resize(150.0 * 13.0, 42.0 * 27.0, 13.0, 27.0);
     for _ in 0..60 {
         world.step(STEP);
@@ -138,7 +150,7 @@ fn sharks_flee_a_click() {
 #[test]
 fn ripple_draws_a_ring() {
     let (cols, rows, cw, ch) = (90, 30, 13.0, 27.0);
-    let mut world = World::new(Vec::new());
+    let mut world = World::new(Vec::new(), None);
     world.resize(cols as f64 * cw, rows as f64 * ch, cw, ch);
     world.fish.clear();
     let mut renderer = Renderer::new();
@@ -201,7 +213,7 @@ fn screenshot_svg() {
     );
     math::seed(seed);
     let kinds = "greathammer,tiger,hammerhead,zebra";
-    let mut world = World::new(demo_sizes(&parse_kinds(kinds)));
+    let mut world = World::new(demo_sizes(&parse_kinds(kinds)), None);
     let mut renderer = Renderer::new();
     let mut grid = Grid::new();
     renderer.resize(cols, rows, cw, ch);
@@ -288,4 +300,126 @@ fn random_sizes_have_one_full_size_shark() {
         assert_eq!(specs.iter().filter(|s| s.size == 1.0).count(), 1);
         assert!(specs.iter().all(|s| (MIN_SIZE..=1.0).contains(&s.size)));
     }
+}
+
+/// The writer's budget: a seeded 200×55 scene of four classics, in true colour.
+#[test]
+fn output_stays_within_budget() {
+    let (cols, rows, cw, ch) = (200, 55, 13.0, 27.0);
+    math::seed(42);
+    let mut world = World::new(demo_sizes(&[SharkKind::Classic; 4]), None);
+    let mut renderer = Renderer::new();
+    let mut grid = Grid::new();
+    renderer.resize(cols, rows, cw, ch);
+    world.resize(cols as f64 * cw, rows as f64 * ch, cw, ch);
+    grid.resize(cols, rows);
+    let mut screen = term::Screen::new(term::ColorMode::TrueColor, false);
+    screen.reset(cols * rows);
+    let (mut bytes, mut frames) = (0, 0);
+    let start = std::time::Instant::now();
+    for i in 0..900 {
+        world.step(STEP);
+        if i % 2 == 1 {
+            renderer.render(&mut world, 1.0 / 30.0, &mut grid);
+            let n = screen.encode(&grid).len();
+            if i > 300 {
+                bytes += n;
+                frames += 1;
+            }
+        }
+    }
+    let per_frame = bytes / frames;
+    eprintln!(
+        "{per_frame} B/frame, {} µs/frame",
+        start.elapsed().as_micros() / 450
+    );
+    assert!(per_frame < 7800, "{per_frame} B/frame");
+}
+
+fn sized_scene(kinds: &[SharkKind], cols: usize, rows: usize) -> (World, Renderer, Grid) {
+    let (cw, ch) = (13.0, 27.0);
+    let mut world = World::new(demo_sizes(kinds), None);
+    let mut renderer = Renderer::new();
+    let mut grid = Grid::new();
+    renderer.resize(cols, rows, cw, ch);
+    world.resize(cols as f64 * cw, rows as f64 * ch, cw, ch);
+    grid.resize(cols, rows);
+    (world, renderer, grid)
+}
+
+#[test]
+fn hovering_a_shark_names_it() {
+    math::seed(3);
+    let (mut world, mut renderer, mut grid) = sized_scene(&[SharkKind::Tiger], 120, 40);
+    for labels in [renderer::Labels::English, renderer::Labels::Chinese] {
+        renderer.labels = labels;
+        let snout = &world.sharks[0].nodes;
+        world.pointer = world::Pointer {
+            x: snout[2] as f64,
+            y: snout[3] as f64,
+            active: true,
+        };
+        renderer.render(&mut world, STEP, &mut grid);
+        let text: String = grid.glyph.iter().collect();
+        let name = SharkKind::Tiger.label(labels == renderer::Labels::Chinese);
+        assert!(
+            text.replace(grid::WIDE_TAIL, "").contains(name),
+            "no {name:?} label"
+        );
+    }
+}
+
+#[test]
+fn resizing_grows_and_shrinks_the_schools() {
+    math::seed(5);
+    let (mut world, ..) = sized_scene(&[SharkKind::Classic], 100, 30);
+    let base = world.fish.len();
+    world.resize(240.0 * 13.0, 60.0 * 27.0, 13.0, 27.0);
+    assert!(world.fish.len() > base);
+    for _ in 0..1200 {
+        world.step(STEP);
+    }
+    assert!(world.fish.iter().filter(|f| f.alive).count() > base);
+    world.resize(80.0 * 13.0, 24.0 * 27.0, 13.0, 27.0);
+    assert!(world.fish.len() <= base);
+    assert!(
+        world
+            .sharks
+            .iter()
+            .all(|s| s.target.is_none_or(|t| t < world.fish.len()))
+    );
+}
+
+#[test]
+fn eaten_bait_does_not_come_back() {
+    math::seed(9);
+    let (mut world, ..) = sized_scene(&[SharkKind::Mako], 120, 40);
+    let base = world.fish.len();
+    let snout = world.sharks[0].nodes;
+    world.feed(snout[0] as f64, snout[1] as f64);
+    assert_eq!(world.fish.len(), base + 24);
+    for _ in 0..1800 {
+        world.step(STEP);
+    }
+    let bait = world.fish.iter().filter(|f| f.bait);
+    assert!(
+        bait.clone().any(|f| !f.alive),
+        "the sharks never ate any bait"
+    );
+    assert!(
+        bait.filter(|f| !f.alive)
+            .all(|f| f.respawn_at.is_infinite())
+    );
+}
+
+#[test]
+fn raindrops_leave_small_ripples() {
+    math::seed(11);
+    let (mut world, mut renderer, mut grid) = sized_scene(&[], 90, 30);
+    world.fish.clear();
+    world.drop(45.0 * 13.0, 15.0 * 27.0);
+    world.time += 0.5;
+    renderer.render(&mut world, STEP, &mut grid);
+    let rings = grid.glyph.iter().filter(|g| "()~/\\".contains(**g)).count();
+    assert!((4..60).contains(&rings), "{rings} ripple cells");
 }

@@ -33,6 +33,7 @@ grid.resize(cols, rows, cw, ch);
 let trace = "";
 for (let i = 0; i < steps; i++) {
   if (i === 100) world.splash(900, 500);
+  if (i === 30) world.pointer = { x: 700, y: 400, active: true };
   if (force && i === 50) {
     world.sharks.forEach((sh: any, k: number) => {
       sh.hunger = 1;

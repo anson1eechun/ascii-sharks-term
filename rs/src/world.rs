@@ -81,6 +81,8 @@ pub struct Fish {
     pub turn: f64,
     pub depth: f64,
     pub mill_dir: f64,
+    /// Not in upstream: dropped by a feed; never respawns once eaten.
+    pub bait: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -108,6 +110,8 @@ pub enum EventKind {
     Splash,
     /// Not in upstream.
     Disturb,
+    Drop,
+    Feed,
 }
 
 pub struct WorldEvent {
@@ -160,12 +164,13 @@ pub struct World {
     bucket_next: Vec<i32>,
     last_spawn: f64,
     shark_specs: Vec<SharkSpec>,
+    fish_count: Option<usize>,
     disturbances: Vec<Disturbance>,
     due: Vec<usize>,
 }
 
 impl World {
-    pub fn new(shark_specs: Vec<SharkSpec>) -> Self {
+    pub fn new(shark_specs: Vec<SharkSpec>, fish_count: Option<usize>) -> Self {
         World {
             width: 0.0,
             height: 0.0,
@@ -185,6 +190,7 @@ impl World {
             bucket_next: Vec::new(),
             last_spawn: 0.0,
             shark_specs,
+            fish_count,
             disturbances: Vec::new(),
             due: Vec::new(),
         }
@@ -206,6 +212,43 @@ impl World {
         for f in &mut self.fish {
             f.x = clamp(f.x, 0.0, width);
             f.y = clamp(f.y, 0.0, height);
+        }
+        self.repopulate();
+    }
+
+    fn population(&self) -> usize {
+        self.fish_count.unwrap_or_else(|| {
+            clamp(js_round((self.width * self.height) / 4400.0), 85.0, 340.0) as usize
+        })
+    }
+
+    /// Not in upstream: after a resize, grows or shrinks the school population to fit.
+    /// New fish start out due to respawn, so they swim in from the edges as schools.
+    fn repopulate(&mut self) {
+        let want = self.population();
+        let have = self.fish.iter().filter(|f| !f.bait).count();
+        if want > have {
+            let template = Fish {
+                alive: false,
+                respawn_at: self.time,
+                bait: false,
+                ..self.fish[0]
+            };
+            self.fish.extend(std::iter::repeat_n(template, want - have));
+        } else if want < have {
+            let mut extra = have - want;
+            for i in (0..self.fish.len()).rev() {
+                if extra == 0 {
+                    break;
+                }
+                if !self.fish[i].bait {
+                    self.fish.remove(i);
+                    extra -= 1;
+                }
+            }
+            for sh in &mut self.sharks {
+                sh.target = None;
+            }
         }
     }
 
@@ -251,7 +294,7 @@ impl World {
         }
         self.sharks.sort_by(|a, b| a.length.total_cmp(&b.length));
 
-        let total = clamp(js_round((w * h) / 4400.0), 85.0, 340.0) as usize;
+        let total = self.population();
         self.fish.clear();
         while self.fish.len() < total {
             let species = pick_species();
@@ -281,6 +324,7 @@ impl World {
                     turn: 0.0,
                     depth,
                     mill_dir,
+                    bait: false,
                 });
             }
         }
@@ -293,7 +337,10 @@ impl World {
             x,
             y,
         });
-        let r = 240.0;
+        self.scatter(x, y, 240.0, 260.0, 1.0);
+    }
+
+    fn scatter(&mut self, x: f64, y: f64, r: f64, push: f64, alarm: f64) {
         for f in &mut self.fish {
             if !f.alive {
                 continue;
@@ -304,10 +351,65 @@ impl World {
             if d > r || d < 1e-3 {
                 continue;
             }
-            let k = (1.0 - d / r) * 260.0;
+            let k = (1.0 - d / r) * push;
             f.vx += (dx / d) * k;
             f.vy += (dy / d) * k;
-            f.alarm = 1.0;
+            f.alarm = f.alarm.max(alarm);
+        }
+    }
+
+    /// Not in upstream: a raindrop; fish close by flinch.
+    pub fn drop(&mut self, x: f64, y: f64) {
+        self.events.push(WorldEvent {
+            kind: EventKind::Drop,
+            x,
+            y,
+        });
+        self.scatter(x, y, 90.0, 110.0, 0.6);
+    }
+
+    /// Not in upstream: drops a ball of sardines at (x, y) and makes nearby sharks hungry.
+    pub fn feed(&mut self, x: f64, y: f64) {
+        const SCHOOL: usize = 24;
+        const MAX_BAIT: usize = 120;
+        self.events.push(WorldEvent {
+            kind: EventKind::Feed,
+            x,
+            y,
+        });
+        let sp = &SPECIES[0];
+        let mill_dir = if random() < 0.5 { 1.0 } else { -1.0 };
+        let spread = (SCHOOL as f64).sqrt();
+        for _ in 0..SCHOOL {
+            let dir = rand(0.0, TAU);
+            let fish = Fish {
+                x: x + rand(-1.0, 1.0) * self.sep_x[0] * spread,
+                y: y + rand(-1.0, 1.0) * self.sep_y[0] * spread * 0.6,
+                vx: dir.cos() * sp.cruise,
+                vy: dir.sin() * sp.cruise,
+                species: 0,
+                alarm: 0.0,
+                alive: true,
+                respawn_at: 0.0,
+                turn: 0.0,
+                depth: rand(0.55, 1.0),
+                mill_dir,
+                bait: true,
+            };
+            match self.fish.iter().position(|f| f.bait && !f.alive) {
+                Some(i) => self.fish[i] = fish,
+                None if self.fish.iter().filter(|f| f.bait).count() < MAX_BAIT => {
+                    self.fish.push(fish)
+                }
+                None => break,
+            }
+        }
+        for sh in &mut self.sharks {
+            let (dx, dy) = (sh.nodes[0] as f64 - x, sh.nodes[1] as f64 - y);
+            if dx.hypot(dy) < sh.length * 1.5 + 300.0 {
+                sh.hunger = sh.hunger.max(0.85);
+                sh.retarget_at = self.time;
+            }
         }
     }
 
@@ -708,7 +810,11 @@ impl World {
                     }
                     if (f.x - mx) * (f.x - mx) + (f.y - my) * (f.y - my) < mouth_r * mouth_r {
                         f.alive = false;
-                        f.respawn_at = time + rand(3.0, 8.0);
+                        f.respawn_at = if f.bait {
+                            f64::INFINITY
+                        } else {
+                            time + rand(3.0, 8.0)
+                        };
                         sh.hunger = (sh.hunger - 0.16).max(0.0);
                         self.events.push(WorldEvent {
                             kind: EventKind::Eat,
