@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1 - 2026-11-19
+
+The program is unchanged from 0.3.0.
+
+### Changed
+- The README shows animations recorded from the renderer, in place of a still screenshot; this also fixes the missing image on the npm page.
+- Release notes come from this changelog.
+
+### Added
+- Tests that drive the binary through a pseudo-terminal: quitting, resizing, Ctrl-Z, pause, still mode, the screensaver.
+
 ## 0.3.0 - 2026-11-19
 
 ### Added
