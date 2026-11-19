@@ -16,7 +16,8 @@ use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
     InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION,
-    STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
+    WaitForSingleObject,
 };
 
 const BIN: &str = env!("CARGO_BIN_EXE_sharks");
@@ -58,6 +59,9 @@ impl Console {
         let mut list = vec![0u8; bytes];
         let mut info: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
         info.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+        // Null standard handles, or the child inherits the test's redirected ones
+        // instead of the pseudo-console's.
+        info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         info.lpAttributeList = list.as_mut_ptr().cast();
         unsafe {
             assert_ne!(
