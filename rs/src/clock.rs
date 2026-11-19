@@ -365,7 +365,10 @@ fn local_time() -> (u32, u32, u32) {
     unsafe {
         let t = libc::time(std::ptr::null_mut());
         let mut tm: libc::tm = std::mem::zeroed();
+        #[cfg(unix)]
         libc::localtime_r(&t, &mut tm);
+        #[cfg(windows)]
+        libc::localtime_s(&mut tm, &t);
         (tm.tm_hour as u32, tm.tm_min as u32, tm.tm_sec as u32)
     }
 }

@@ -11,19 +11,35 @@ permissions:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, ubuntu-latest, windows-latest, windows-11-arm]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: rs
+        shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: cargo fmt --check
       - run: cargo clippy --release --all-targets --locked -- -D warnings
       - run: cargo test --release --locked
       - name: Binary stays small
-        run: cargo build --release --locked && size=$(wc -c < target/release/sharks) && echo "$size bytes" && test "$size" -lt 550000
+        run: |
+          cargo build --release --locked
+          bin=target/release/sharks
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          size=$(wc -c < "$bin") && echo "$size bytes" && test "$size" -lt 550000
+      - name: Package as a release would
+        if: runner.os == 'Windows'
+        working-directory: .
+        run: scripts/package.sh rs/target/release/sharks "sharks-windows-${{ runner.arch }}" && ls -l dist
+      - name: Windows build to try out
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sharks-windows-${{ runner.arch }}
+          path: dist/sharks-windows-${{ runner.arch }}
 
   verify:
     runs-on: macos-latest
