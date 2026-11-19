@@ -2,7 +2,7 @@
 
 **English** | [繁體中文](README.zh-TW.md)
 
-ASCII sharks hunting schools of fish in your terminal, in 24-bit colour. A small (~400 KB), dependency-free Rust port of [stackedlol/ascii-sharks](https://github.com/stackedlol/ascii-sharks), with mouse interaction.
+ASCII sharks hunting schools of fish in your terminal, in 24-bit colour. A small (~400 KB) Rust port of [stackedlol/ascii-sharks](https://github.com/stackedlol/ascii-sharks), with mouse interaction, built on nothing but libc (and Microsoft's `windows-sys` bindings on Windows).
 
 <p align="center">
   <img src="docs/demo.svg" alt="sharks in a terminal: four sharks hunting schools of fish, a click ripple that scatters them, and sardines dropped as food" width="100%">
@@ -47,9 +47,18 @@ cargo install --locked --git https://github.com/anson1eechun/ascii-sharks-term s
 
 ### Prebuilt binaries
 
-Download a `.tar.gz` for your platform from [Releases](https://github.com/anson1eechun/ascii-sharks-term/releases) and put `sharks` on your `PATH`. On macOS, a binary downloaded through a browser is quarantined, so clear that once with `xattr -d com.apple.quarantine sharks`.
+Download a `.tar.gz` (macOS, Linux) or `.zip` (Windows) from [Releases](https://github.com/anson1eechun/ascii-sharks-term/releases) and put `sharks` on your `PATH`. On macOS, a binary downloaded through a browser is quarantined, so clear that once with `xattr -d com.apple.quarantine sharks`.
 
-**Platforms:** macOS (Apple Silicon and Intel) and Linux (x86_64 and arm64; static musl builds). On Windows, use WSL.
+**Platforms:** macOS (Apple Silicon and Intel), Linux (x86_64 and arm64; static musl builds), and Windows 10 and 11 (x64 and arm64; experimental).
+
+### Windows (experimental)
+
+Unzip the release and run `sharks.exe` in Windows Terminal, PowerShell or Command Prompt. Homebrew and npm don't carry Windows builds yet.
+
+- Windows Terminal works best. In Windows 10's older console window, clicks come through the console's own mouse events instead.
+- Git Bash's terminal (mintty) isn't a Windows console. Run `sharks` from Windows Terminal, or through `winpty sharks`.
+- `Ctrl-Z` only redraws: Windows can't suspend a program to the background.
+- The Linux build also runs in WSL, installed with Homebrew or npm as above.
 
 ## Usage
 
@@ -97,7 +106,7 @@ sharks -S                              # screensaver: any key quits
 |---|---|
 | `q`, `Esc`, `Ctrl-C` | Quit. |
 | `p` | Pause. |
-| `Ctrl-Z` | Suspend; `fg` brings it back. |
+| `Ctrl-Z` | Suspend; `fg` brings it back (not on Windows). |
 | Mouse move | Fish flee the pointer. Hover a shark to see its name. |
 | Click, space | Ripple: fish scatter, nearby sharks turn away. |
 | Right-click, `f` | Drop food: a ball of sardines the sharks come for. |
@@ -233,12 +242,12 @@ SHARKS_DEMO=../docs cargo test --release write_demos   # redraw the animations i
 | `rs/src/app.rs` | The frame loop, keyboard and mouse, still and print modes (replaces upstream's `engine.ts`) |
 | `rs/src/clock.rs` | The clock styles and the message |
 | `rs/src/grid.rs` | The cell grid everything draws into, with wide-glyph support |
-| `rs/src/term.rs` | Terminal I/O on plain libc: raw mode, size, signals, the startup probe |
+| `rs/src/term/` | Terminal I/O: raw mode, size, signals, the startup probe; `unix.rs` on plain libc, `windows.rs` on the Windows console |
 | `rs/src/screen.rs` | The writer: only changed cells, in 24-bit, 256, 16 or no colour |
 | `rs/src/input.rs` | Keys and SGR mouse reports from raw bytes |
 | `rs/src/cli.rs`, `main.rs` | Options and wiring |
 | `rs/src/demo.rs`, `docs/` | The README animations: seeded scenes recorded as SVG. CI checks they are up to date |
-| `rs/tests/` | The binary driven through a pseudo-terminal: keys, resizing, Ctrl-Z, still mode |
+| `rs/tests/` | The binary driven through a pseudo-terminal (`terminal.rs`) or a Windows pseudo-console (`conpty.rs`): keys, resizing, Ctrl-Z, still mode |
 | `upstream/` | Git submodule of the original, pinned to the verified commit |
 | `cell-canvas.ts` | A canvas stand-in that lets `verify/` run upstream's renderer in a terminal-sized grid |
 | `npm/` | npm package: the launcher and its manifest |

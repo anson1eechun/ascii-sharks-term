@@ -249,7 +249,7 @@ impl App {
             match term::read_input(&mut buf) {
                 Ok(0) => return Ok(true),
                 Ok(n) => self.pending.extend_from_slice(&buf[..n]),
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => break,
+                Err(e) if term::is_transient(&e) => break,
                 Err(e) => return Err(e),
             }
             let used = input::parse(&self.pending, &mut self.inputs);

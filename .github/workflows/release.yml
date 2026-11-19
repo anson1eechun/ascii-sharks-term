@@ -19,7 +19,12 @@ jobs:
           - { target: x86_64-apple-darwin, os: macos-latest, native: false }
           - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, native: true }
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, native: true }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, native: true }
+          - { target: aarch64-pc-windows-msvc, os: windows-11-arm, native: true }
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Tag matches rs/Cargo.toml
@@ -32,17 +37,16 @@ jobs:
       - if: matrix.native
         run: |
           bin="rs/target/${{ matrix.target }}/release/sharks"
+          [ -f "$bin.exe" ] && bin="$bin.exe"
           "$bin" -V && "$bin" -l | grep -q greathammer
       - name: Package
-        run: |
-          name="sharks-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          mkdir -p "dist/$name"
-          cp "rs/target/${{ matrix.target }}/release/sharks" LICENSE README.md "dist/$name/"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
+        run: scripts/package.sh "rs/target/${{ matrix.target }}/release/sharks" "sharks-${GITHUB_REF_NAME}-${{ matrix.target }}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.target }}
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
 
   release:
     needs: build
@@ -55,7 +59,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - run: cd dist && sha256sum *.tar.gz > SHA256SUMS
+      - run: cd dist && sha256sum sharks-* > SHA256SUMS
       - run: scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > notes.md
       - run: |
           gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||

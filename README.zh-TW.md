@@ -2,7 +2,7 @@
 
 [English](README.md) | **繁體中文**
 
-讓 ASCII 鯊魚在你的終端機裡獵捕魚群，24-bit 全彩。這是 [stackedlol/ascii-sharks](https://github.com/stackedlol/ascii-sharks) 的 Rust 移植版，執行檔約 400 KB，不依賴任何套件，可以用滑鼠互動。
+讓 ASCII 鯊魚在你的終端機裡獵捕魚群，24-bit 全彩。這是 [stackedlol/ascii-sharks](https://github.com/stackedlol/ascii-sharks) 的 Rust 移植版，執行檔約 400 KB，可以用滑鼠互動。除了 libc 之外不依賴任何套件，Windows 版另外用到 Microsoft 的 `windows-sys`。
 
 <p align="center">
   <img src="docs/demo.svg" alt="終端機裡的 sharks：四隻鯊魚追獵魚群，點擊產生的漣漪把牠們嚇開，接著投下沙丁魚當食物" width="100%">
@@ -47,9 +47,18 @@ cargo install --locked --git https://github.com/anson1eechun/ascii-sharks-term s
 
 ### 直接下載執行檔
 
-到 [Releases](https://github.com/anson1eechun/ascii-sharks-term/releases) 下載對應平台的 `.tar.gz`，把 `sharks` 放進 `PATH`。在 macOS 上用瀏覽器下載的執行檔會被系統隔離，第一次執行前要先跑一次 `xattr -d com.apple.quarantine sharks`。
+到 [Releases](https://github.com/anson1eechun/ascii-sharks-term/releases) 下載對應平台的 `.tar.gz`（macOS、Linux）或 `.zip`（Windows），把 `sharks` 放進 `PATH`。在 macOS 上用瀏覽器下載的執行檔會被系統隔離，第一次執行前要先跑一次 `xattr -d com.apple.quarantine sharks`。
 
-**支援平台：** macOS（Apple Silicon、Intel）和 Linux（x86_64、arm64，musl 靜態編譯）。Windows 請用 WSL。
+**支援平台：** macOS（Apple Silicon、Intel）、Linux（x86_64、arm64，musl 靜態編譯），以及 Windows 10 和 11（x64、arm64，實驗性質）。
+
+### Windows（實驗性質）
+
+解壓縮 Release 裡的 zip，在 Windows Terminal、PowerShell 或命令提示字元裡執行 `sharks.exe`。Homebrew 和 npm 目前還沒有 Windows 版。
+
+- 在 Windows Terminal 裡效果最好。在 Windows 10 舊的主控台視窗裡，點擊改由主控台自己的滑鼠事件傳進來。
+- Git Bash 的終端機（mintty）不是 Windows 主控台。請在 Windows Terminal 裡執行，或用 `winpty sharks`。
+- `Ctrl-Z` 只會重畫：Windows 沒辦法把程式暫停到背景。
+- 也可以在 WSL 裡用上面的 Homebrew 或 npm 安裝 Linux 版。
 
 ## 使用方式
 
@@ -97,7 +106,7 @@ sharks -S                              # 螢幕保護模式，按任意鍵離開
 |---|---|
 | `q`、`Esc`、`Ctrl-C` | 離開。 |
 | `p` | 暫停。 |
-| `Ctrl-Z` | 暫停到背景，用 `fg` 叫回來。 |
+| `Ctrl-Z` | 暫停到背景，用 `fg` 叫回來（Windows 不支援）。 |
 | 移動滑鼠 | 魚群會避開游標；停在鯊魚上會顯示名稱。 |
 | 點擊、空白鍵 | 泛起漣漪：魚群四散，附近的鯊魚轉向逃開。 |
 | 右鍵、`f` | 餵食：投下一群沙丁魚，鯊魚會聚過來。 |
@@ -235,12 +244,12 @@ SHARKS_DEMO=../docs cargo test --release write_demos   # 重新產生 docs/ 裡�
 | `rs/src/app.rs` | 主迴圈、鍵盤和滑鼠、靜止與列印模式，取代原作的 `engine.ts` |
 | `rs/src/clock.rs` | 時鐘字型與訊息 |
 | `rs/src/grid.rs` | 所有內容都畫進去的字元格，支援寬字元 |
-| `rs/src/term.rs` | 只用 libc 的終端機 I/O：raw mode、視窗大小、訊號、啟動時的偵測 |
+| `rs/src/term/` | 終端機 I/O：raw mode、視窗大小、訊號、啟動時的偵測；`unix.rs` 只用 libc，`windows.rs` 用 Windows 主控台 |
 | `rs/src/screen.rs` | 輸出端：只送出變動的格子，支援全彩、256 色、16 色和無色 |
 | `rs/src/input.rs` | 從原始位元組解析按鍵和 SGR 滑鼠回報 |
 | `rs/src/cli.rs`、`main.rs` | 參數處理與串接 |
 | `rs/src/demo.rs`、`docs/` | README 的動畫：用固定 seed 錄成 SVG，CI 會檢查是否跟程式碼同步 |
-| `rs/tests/` | 透過虛擬終端機實際操作執行檔：按鍵、縮放視窗、Ctrl-Z、靜止模式 |
+| `rs/tests/` | 透過虛擬終端機（`terminal.rs`）或 Windows 虛擬主控台（`conpty.rs`）實際操作執行檔：按鍵、縮放視窗、Ctrl-Z、靜止模式 |
 | `upstream/` | 原作的 git submodule，固定在驗證過的版本 |
 | `cell-canvas.ts` | 取代瀏覽器 canvas，讓 `verify/` 能在終端機尺寸的網格上執行原作的渲染器 |
 | `npm/` | npm 套件的啟動腳本和設定檔 |
