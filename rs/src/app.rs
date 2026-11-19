@@ -193,10 +193,7 @@ impl App {
     }
 
     pub fn run(&mut self) -> io::Result<()> {
-        if self.settings.mouse() {
-            term::write_all(term::MOUSE_ON)?;
-        }
-        self.layout()?;
+        self.show()?;
         loop {
             let signals = term::take_signals();
             if signals.terminate {
@@ -204,10 +201,10 @@ impl App {
             }
             if signals.suspend {
                 term::suspend()?;
-                self.resume()?;
+                self.show()?;
             } else if signals.continued {
                 term::enter()?;
-                self.resume()?;
+                self.show()?;
             } else if signals.resized {
                 self.layout()?;
             }
@@ -237,7 +234,7 @@ impl App {
         }
     }
 
-    fn resume(&mut self) -> io::Result<()> {
+    fn show(&mut self) -> io::Result<()> {
         if self.settings.mouse() {
             term::write_all(term::MOUSE_ON)?;
         }
@@ -285,7 +282,7 @@ impl App {
             Input::Key(b'q' | b'Q' | CTRL_C) | Input::Esc => return Ok(true),
             Input::Key(CTRL_Z) => {
                 term::suspend()?;
-                self.resume()?;
+                self.show()?;
             }
             Input::Key(b'p' | b'P') => self.toggle_pause(),
             Input::Key(b' ') => self.act(World::click),

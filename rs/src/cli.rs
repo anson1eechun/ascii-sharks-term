@@ -283,20 +283,21 @@ pub fn parse_kinds(list: &str) -> Result<Vec<SharkKind>, Stop> {
             None => unknown.push(name),
         }
     }
-    let unknown = unknown.join(", ");
-    match kinds.len() {
-        _ if !unknown.is_empty() && zh() => Err(Stop::Fail(format!(
-            "不認得的鯊魚種類：{unknown}（用 -l 看清單）"
-        ))),
-        _ if !unknown.is_empty() => Err(Stop::Fail(format!(
-            "unknown shark kind: {unknown} (see -l)"
-        ))),
-        1..=MAX_SHARKS => Ok(kinds),
-        _ => Err(Stop::Fail(format!(
+    if !unknown.is_empty() {
+        let unknown = unknown.join(", ");
+        return Err(Stop::Fail(if zh() {
+            format!("不認得的鯊魚種類：{unknown}（用 -l 看清單）")
+        } else {
+            format!("unknown shark kind: {unknown} (see -l)")
+        }));
+    }
+    if !(1..=MAX_SHARKS).contains(&kinds.len()) {
+        return Err(Stop::Fail(format!(
             "-k: 1–{MAX_SHARKS} {}",
             t("sharks", "隻鯊魚")
-        ))),
+        )));
     }
+    Ok(kinds)
 }
 
 #[cfg(test)]
